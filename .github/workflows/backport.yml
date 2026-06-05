@@ -1,0 +1,59 @@
+# Backport Bot Workflow
+# Triggers when a PR is merged with the "needs-backport" label.
+# Runs the backport Python script which cherry-picks the fix
+# to affected branches and opens PRs for human review.
+
+name: Backport Bot
+
+# Trigger: fires on PR close (which includes merge) and when a label is added
+on:
+  pull_request:
+    types: [closed, labeled]
+
+jobs:
+  backport:
+    # Only run when:
+    # 1. The PR was actually merged (not just closed without merging)
+    # 2. The PR has the "needs-backport" label
+    if: |
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'needs-backport')
+    runs-on: ubuntu-latest
+    # Grant the workflow's GITHUB_TOKEN the scopes it needs:
+    #   contents: write       → push backport branches
+    #   pull-requests: write  → open PRs, post comments
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Checkout with full git history (fetch-depth: 0)
+      # Needed for git blame, git merge-base, and cherry-pick operations.
+      - name: Checkout repo with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Cherry-pick creates new commits, which require an author identity.
+      # CI runners have no git config by default, so we set one here.
+      - name: Configure git identity
+        run: |
+          git config user.name  "backport-bot"
+          git config user.email "backport-bot@users.noreply.github.com"
+
+      # Set up Python to run the bot script.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Run the bot script with environment variables:
+      #   GITHUB_TOKEN → authenticates `gh` CLI and `git push`
+      #   PR_NUMBER    → the merged PR that triggered this run
+      #   MERGE_COMMIT → the SHA to cherry-pick onto each affected branch
+      - name: Run backport bot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+        run: python scripts/backport_bot.py
