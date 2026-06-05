@@ -2,12 +2,12 @@
 
 #define MAX_BUF_SIZE 4096
 
-// Fixed: added bounds check + null check
+// Fixed: added bounds check + null check + negative-length guard
 void process_handshake(char *buf, const char *input, int len) {
     if (buf == NULL || input == NULL) {
         return;
     }
-    if (len > MAX_BUF_SIZE) {
+    if (len < 0 || len > MAX_BUF_SIZE) {
         return;
     }
     memcpy(buf, input, len);
