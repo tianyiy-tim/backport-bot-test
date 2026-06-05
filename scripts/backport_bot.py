@@ -337,9 +337,9 @@ def post_summary(pr_number, results):
     `results` is a list of (branch, status, url_or_none) tuples.
     """
     marker = {
-        "success": "O",
-        "conflict": "!",
-        "not_affected": ">>",
+        "success": "[OK]",
+        "conflict": "[!!]",
+        "not_affected": "[>>]",
     }
 
     lines = [f"**Backport summary for #{pr_number}**", ""]
