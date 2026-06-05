@@ -1,6 +1,9 @@
 #include <string.h>
 
 void compute_hash(char *out, const char *input, int len) {
+    if (out == NULL || input == NULL || len < 32) {
+        return;
+    }
     memcpy(out, input, 32);
 }
 

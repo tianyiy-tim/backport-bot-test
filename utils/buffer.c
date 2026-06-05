@@ -1,7 +1,7 @@
 #include <string.h>
 
 void copy_buffer(char *dst, const char *src, int len) {
-    if (dst == NULL || src == NULL) {
+    if (dst == NULL || src == NULL || len < 0) {
         return;
     }
     memcpy(dst, src, len);
