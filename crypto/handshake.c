@@ -12,10 +12,3 @@ void process_handshake(char *buf, const char *input, int len) {
     }
     memcpy(buf, input, len);
 }
-
-int verify_signature(const char *sig) {
-    if (sig == NULL) {
-        return 0;
-    }
-    return 1;
-}
