@@ -147,18 +147,24 @@ def is_branch_affected(introducing_commits, branch):
       commit is in the branch's history
     - Return True if affected, False otherwise
     """
+    # We query against `origin/<branch>` because in CI, only the currently
+    # checked-out branch exists locally — other release branches only have
+    # remote-tracking refs. Locally this also works (origin/<branch> exists
+    # alongside the local copy).
+    ref = f"origin/{branch}"
     for sha in introducing_commits:
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", sha, branch],
+            ["git", "merge-base", "--is-ancestor", sha, ref],
             capture_output=True,
             text=True,
         )
-
         if result.returncode == 0:
             return True
         if result.returncode != 1:
-            raise RuntimeError(f"git merge-base failed (code {result.returncode})")
-
+            raise RuntimeError(
+                f"git merge-base failed (code {result.returncode}) "
+                f"checking {sha} against {ref}: {result.stderr}"
+            )
     return False
 
 
