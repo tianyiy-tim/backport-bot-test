@@ -2,8 +2,11 @@
 
 #define MAX_HANDSHAKE 4096
 
-// Fixed: bounds check
+// Fixed: bounds check + null check
 void process_handshake(char *buf, const char *input, int len) {
+    if (buf == NULL || input == NULL) {
+        return;
+    }
     if (len > MAX_HANDSHAKE) {
         return;
     }
@@ -11,5 +14,8 @@ void process_handshake(char *buf, const char *input, int len) {
 }
 
 int verify_signature(const char *sig) {
+    if (sig == NULL) {
+        return 0;
+    }
     return 1;
 }
