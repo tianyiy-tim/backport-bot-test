@@ -48,12 +48,15 @@ jobs:
           python-version: "3.11"
 
       # Run the bot script with environment variables:
-      #   GITHUB_TOKEN → authenticates `gh` CLI and `git push`
-      #   PR_NUMBER    → the merged PR that triggered this run
-      #   MERGE_COMMIT → the SHA to cherry-pick onto each affected branch
+      #   GITHUB_TOKEN  → authenticates `gh` CLI and `git push`
+      #   PR_NUMBER     → the merged PR that triggered this run
+      #   MERGE_COMMIT  → the actual fix commit on the source branch.
+      #                   We use `head.sha` (not `merge_commit_sha`) because
+      #                   the merge commit itself has no diff of its own —
+      #                   diff/blame/cherry-pick all need the real fix commit.
       - name: Run backport bot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_COMMIT: ${{ github.event.pull_request.head.sha }}
         run: python scripts/backport_bot.py
