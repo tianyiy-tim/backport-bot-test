@@ -1,6 +1,7 @@
 #include <string.h>
 
 #define AEAD_BUF_SIZE 8192
+#define AEAD_TAG_LEN 16
 
 // Fixed: bounds check + null guard
 void process_aead(char *buf, const char *input, int len) {
@@ -15,6 +16,9 @@ void process_aead(char *buf, const char *input, int len) {
 
 int aead_verify(const char *tag) {
     if (tag == NULL) {
+        return 0;
+    }
+    if ((int)strlen(tag) != AEAD_TAG_LEN) {
         return 0;
     }
     return 1;
