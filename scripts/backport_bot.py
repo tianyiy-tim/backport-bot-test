@@ -202,15 +202,17 @@ def _find_line_origin(file, line_start, line_end, ref):
 def is_branch_affected(introducing_commits, branch):
     """
     Check if the branch contains the vulnerable code.
-    - Use git merge-base --is-ancestor to check if any introducing
-      commit is in the branch's history
-    - Return True if affected, False otherwise
+
+    Two paths:
+    1. Direct ancestry — introducer SHA is in the branch's history.
+    2. Cherry-pick equivalence — the introducer's *content* (patch-id) matches
+       a commit on the branch, even if the SHA is different. This catches the
+       common case where a feature was cherry-picked to a release branch and
+       got a new SHA in the process.
     """
-    # We query against `origin/<branch>` because in CI, only the currently
-    # checked-out branch exists locally — other release branches only have
-    # remote-tracking refs. Locally this also works (origin/<branch> exists
-    # alongside the local copy).
     ref = f"origin/{branch}"
+
+    # Path 1: direct SHA ancestry (fast)
     for sha in introducing_commits:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, ref],
@@ -224,7 +226,38 @@ def is_branch_affected(introducing_commits, branch):
                 f"git merge-base failed (code {result.returncode}) "
                 f"checking {sha} against {ref}: {result.stderr}"
             )
+
+    # Path 2: patch-id equivalence (handles cherry-picked introducers)
+    branch_pids = _get_branch_patch_ids(ref)
+    for sha in introducing_commits:
+        pid = _patch_id_of(sha)
+        if pid and pid in branch_pids:
+            return True
+
     return False
+
+
+def _get_branch_patch_ids(ref):
+    """
+    Return the set of patch-ids for every non-merge commit on `ref`.
+    Computed in a single git pipeline; safe to call repeatedly per branch.
+    """
+    log = subprocess.run(
+        ["git", "log", "-p", "--no-merges", "--format=%H", ref],
+        capture_output=True,
+        text=True,
+    )
+    if log.returncode != 0:
+        return set()
+    pid_proc = subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=log.stdout,
+        capture_output=True,
+        text=True,
+    )
+    if pid_proc.returncode != 0:
+        return set()
+    return {line.split()[0] for line in pid_proc.stdout.splitlines() if line.split()}
 
 
 def is_already_patched(commit, branch):
@@ -250,30 +283,7 @@ def is_already_patched(commit, branch):
     # 2. All patch-ids on the branch, computed in a single git pipeline
     #    (efficient even for branches with thousands of commits).
     ref = f"origin/{branch}"
-    log = subprocess.run(
-        ["git", "log", "-p", "--no-merges", "--format=%H", ref],
-        capture_output=True,
-        text=True,
-    )
-    if log.returncode != 0:
-        return False
-
-    pid_proc = subprocess.run(
-        ["git", "patch-id", "--stable"],
-        input=log.stdout,
-        capture_output=True,
-        text=True,
-    )
-    if pid_proc.returncode != 0:
-        return False
-
-    # `git patch-id` prints lines of the form: "<patch_id> <commit_id>"
-    branch_pids = set()
-    for line in pid_proc.stdout.splitlines():
-        parts = line.split()
-        if parts:
-            branch_pids.add(parts[0])
-
+    branch_pids = _get_branch_patch_ids(ref)
     return target_pid in branch_pids
 
 
