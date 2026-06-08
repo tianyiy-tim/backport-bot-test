@@ -16,6 +16,14 @@ import sys
 
 # --- Configuration ---
 
+# Branches we treat as "supported" for backport purposes.
+# Each entry is a prefix matched against `origin/<branch>` from `git branch -r`.
+# Add new release lines or one-off branches (like NetOS) here.
+SUPPORTED_BRANCH_PREFIXES = (
+    "origin/AWS-LC-FIPS-",  # standard release branches
+    "origin/NetOS",  # one-off branch for NetOS team (per design doc)
+)
+
 # TODO: Add FIPS boundary detection later
 # FIPS_BOUNDARY_PATHS = ["crypto/fipsmodule/"]
 
@@ -26,19 +34,10 @@ import sys
 def get_supported_branches():
     """
     Get list of currently supported branches.
-    - Query remote branches matching naming conventions (e.g., AWS-LC-FIPS-*)
+    - Query remote branches matching naming conventions (AWS-LC-FIPS-* + NetOS)
     - Filter by end-of-support dates from VERSIONING.md  (skip for now)
     - Return list of branch names (without the "origin/" prefix)
     """
-    # TODO: implement
-    #   1. Run `git branch -r` via subprocess.run(...)
-    #   2. Read the captured stdout
-    #   3. Split it into lines
-    #   4. For each line: strip whitespace, skip the "HEAD -> ..." line,
-    #      keep only lines that start with "origin/AWS-LC-FIPS-"
-    #   5. Strip the "origin/" prefix from each kept name
-    #   6. Return the list
-
     result = subprocess.run(["git", "branch", "-r"], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"git branch -r failed: {result.stderr}")
@@ -46,10 +45,12 @@ def get_supported_branches():
     branches = []
     for line in result.stdout.splitlines():
         line = line.strip()
-        if not line.startswith("origin/AWS-LC-FIPS-"):
+        # Skip the symbolic ref "origin/HEAD -> origin/main".
+        if " -> " in line:
             continue
-        line = line[len("origin/") :]
-        branches.append(line)
+        if not line.startswith(SUPPORTED_BRANCH_PREFIXES):
+            continue
+        branches.append(line[len("origin/") :])
     return branches
 
 
