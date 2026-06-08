@@ -2,13 +2,14 @@
 
 #define AEAD_BUF_SIZE 8192
 #define AEAD_TAG_LEN 16
+#define AEAD_MIN_OUTPUT 32
 
 // Fixed: bounds check + null guard
 void process_aead(char *buf, const char *input, int len) {
     if (buf == NULL || input == NULL) {
         return;
     }
-    if (len < 0 || len > AEAD_BUF_SIZE) {
+    if (len < AEAD_MIN_OUTPUT || len > AEAD_BUF_SIZE) {
         return;
     }
     memcpy(buf, input, len);
