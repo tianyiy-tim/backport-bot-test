@@ -55,7 +55,7 @@ DEFAULT_BACKEND = os.environ.get("AGENTIC_BACKEND", "mock")
 # Bedrock config (only used when backend == "bedrock").
 BEDROCK_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get(
-    "BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 )
 
 
