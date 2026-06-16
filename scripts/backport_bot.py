@@ -18,10 +18,18 @@ import sys
 
 # Branches we treat as "supported" for backport purposes.
 # Each entry is a prefix matched against `origin/<branch>` from `git branch -r`.
-# Add new release lines or one-off branches (like NetOS) here.
-SUPPORTED_BRANCH_PREFIXES = (
-    "origin/AWS-LC-FIPS-",  # standard release branches
-    "origin/NetOS",  # one-off branch for NetOS team (per design doc)
+# Overridable per-repo via the BACKPORT_BRANCH_PREFIXES env var (comma-separated).
+#
+# Default covers both:
+#   - real aws/aws-lc release branches: `fips-YYYY-MM-DD` (incl. `fips-NetOS-*`)
+#   - the synthetic POC fixture:        `AWS-LC-FIPS-*` and `NetOS`
+SUPPORTED_BRANCH_PREFIXES = tuple(
+    p.strip()
+    for p in os.environ.get(
+        "BACKPORT_BRANCH_PREFIXES",
+        "origin/fips-,origin/AWS-LC-FIPS-,origin/NetOS",
+    ).split(",")
+    if p.strip()
 )
 
 # TODO: Add FIPS boundary detection later
@@ -239,13 +247,20 @@ def is_branch_affected(introducing_commits, branch):
 
 def _get_branch_patch_ids(ref):
     """
-    Return the set of patch-ids for every non-merge commit on `ref`.
-    Computed in a single git pipeline; safe to call repeatedly per branch.
+    Return the set of patch-ids for the branch's DIVERGENT commits — those on
+    `ref` but not on mainline. Cherry-picked backports live there, so this is
+    the right (and far smaller) set to scan than the branch's entire history.
+
+    Reads git output as bytes to tolerate non-UTF-8 content (e.g. binary test
+    vectors in the diffs), which would otherwise crash text decoding.
+
+    Mainline ref is configurable via BACKPORT_MAINLINE_REF (default origin/main).
     """
+    mainline = os.environ.get("BACKPORT_MAINLINE_REF", "origin/main")
+    rev_range = f"{mainline}..{ref}"
     log = subprocess.run(
-        ["git", "log", "-p", "--no-merges", "--format=%H", ref],
-        capture_output=True,
-        text=True,
+        ["git", "log", "-p", "--no-merges", "--format=%H", rev_range],
+        capture_output=True,  # bytes, not text: diffs may contain binary content
     )
     if log.returncode != 0:
         return set()
@@ -253,11 +268,11 @@ def _get_branch_patch_ids(ref):
         ["git", "patch-id", "--stable"],
         input=log.stdout,
         capture_output=True,
-        text=True,
     )
     if pid_proc.returncode != 0:
         return set()
-    return {line.split()[0] for line in pid_proc.stdout.splitlines() if line.split()}
+    out = pid_proc.stdout.decode("ascii", errors="replace")
+    return {line.split()[0] for line in out.splitlines() if line.split()}
 
 
 def is_already_patched(commit, branch):
@@ -271,19 +286,15 @@ def is_already_patched(commit, branch):
 
     Algorithm:
     1. Compute patch-id of the fix commit.
-    2. Compute patch-ids of every non-merge commit on the branch.
+    2. Compute patch-ids of the branch's divergent commits.
     3. Return True if any match.
     """
-    # 1. Patch-id of the fix commit.
     target_pid = _patch_id_of(commit)
     if not target_pid:
         # patch-id can be empty for trivial/edge-case patches; assume not patched.
         return False
 
-    # 2. All patch-ids on the branch, computed in a single git pipeline
-    #    (efficient even for branches with thousands of commits).
-    ref = f"origin/{branch}"
-    branch_pids = _get_branch_patch_ids(ref)
+    branch_pids = _get_branch_patch_ids(f"origin/{branch}")
     return target_pid in branch_pids
 
 
@@ -291,8 +302,7 @@ def _patch_id_of(commit):
     """Return the patch-id (content hash) of a single commit, or None on failure."""
     show = subprocess.run(
         ["git", "show", commit],
-        capture_output=True,
-        text=True,
+        capture_output=True,  # bytes: the commit may touch binary files
     )
     if show.returncode != 0:
         return None
@@ -300,11 +310,10 @@ def _patch_id_of(commit):
         ["git", "patch-id", "--stable"],
         input=show.stdout,
         capture_output=True,
-        text=True,
     )
     if pid.returncode != 0 or not pid.stdout.strip():
         return None
-    return pid.stdout.split()[0]
+    return pid.stdout.decode("ascii", errors="replace").split()[0]
 
 
 # --- Step 3: Pre-Flight Checks ---
@@ -411,20 +420,30 @@ def cherry_pick_to_branch(commit, branch):
 # --- Step 5: PR Creation & Summary ---
 
 
-def open_pr(pr_branch, target_branch, commit, pr_number):
+def open_pr(pr_branch, target_branch, commit, pr_number, repo=None):
     """
     Open a pull request from the backport branch to the target branch.
     - Uses the `gh` CLI under the hood.
     - Idempotent: if a PR for this head/base pair already exists, returns
       its URL instead of failing.
     - Returns the URL of the (new or existing) PR.
+
+    `repo` (or the BACKPORT_REPO env var) pins the PR to a specific repository,
+    e.g. "tianyiy-tim/aws-lc". THIS IS A SAFETY GUARD: on a fork, `gh pr create`
+    defaults the base to the upstream parent (e.g. aws/aws-lc). Pinning the repo
+    guarantees backport PRs are created within the fork and never against
+    upstream.
     """
+    repo = repo or os.environ.get("BACKPORT_REPO")
+    repo_args = ["--repo", repo] if repo else []
+
     # 1. Check whether an open PR for this head/base pair already exists.
     existing = subprocess.run(
         [
             "gh",
             "pr",
             "list",
+            *repo_args,
             "--head",
             pr_branch,
             "--base",
@@ -457,6 +476,7 @@ def open_pr(pr_branch, target_branch, commit, pr_number):
             "gh",
             "pr",
             "create",
+            *repo_args,
             "--base",
             target_branch,
             "--head",
@@ -476,11 +496,19 @@ def open_pr(pr_branch, target_branch, commit, pr_number):
     return result.stdout.strip()
 
 
-def post_summary(pr_number, results):
+def post_summary(pr_number, results, repo=None):
     """
     Post a summary comment on the original PR listing what happened on each branch.
     `results` is a list of (branch, status, url_or_none) tuples.
+
+    `repo` (or the BACKPORT_REPO env var) pins the comment to a specific
+    repository. SAFETY GUARD: without it, `gh pr comment <number>` is resolved
+    against whatever repo context gh infers, which on a fork can point at the
+    upstream parent. Pinning guarantees the comment lands on the intended repo.
     """
+    repo = repo or os.environ.get("BACKPORT_REPO")
+    repo_args = ["--repo", repo] if repo else []
+
     marker = {
         "success": "[OK]",
         "conflict": "[!!]",
@@ -509,7 +537,7 @@ def post_summary(pr_number, results):
     body = "\n".join(lines)
 
     result = subprocess.run(
-        ["gh", "pr", "comment", str(pr_number), "--body", body],
+        ["gh", "pr", "comment", *repo_args, str(pr_number), "--body", body],
         capture_output=True,
         text=True,
     )
