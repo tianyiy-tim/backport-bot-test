@@ -1,34 +1,72 @@
 # Backport Bot Workflow
-# Triggers when a PR is merged with the "needs-backport" label.
-# Runs the backport Python script which cherry-picks the fix
-# to affected branches and opens PRs for human review.
+# Triggers when a PR is merged with the "needs-backport" label, OR manually via
+# the Actions tab ("Run workflow") for dry runs / validation.
+# Runs the backport Python script which cherry-picks the fix to affected
+# branches and opens PRs for human review.
 
 name: Backport Bot
 
-# Trigger: fires on PR close (which includes merge) and when a label is added
 on:
+  # Automatic: fires on PR close (which includes merge) and when a label is added
   pull_request:
     types: [closed, labeled]
+  # Manual: run on demand from the Actions tab. Lets you validate the bot
+  # end-to-end (AI + PR creation) using the configured secrets, without waiting
+  # for a real merged PR. NOTE: workflow_dispatch only appears in the UI when
+  # this file is on the repository's DEFAULT branch (usually `main`).
+  workflow_dispatch:
+    inputs:
+      merge_commit:
+        description: "Fix commit SHA to backport (the PR head sha)"
+        required: true
+        type: string
+      pr_number:
+        description: "Originating PR number (used for the summary comment)"
+        required: true
+        type: string
+      smoke_test_only:
+        description: "Only run the pre-flight smoke test (skip the actual backport)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   backport:
-    # Only run when:
-    # 1. The PR was actually merged (not just closed without merging)
-    # 2. The PR has the "needs-backport" label
-    if: |
-      github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'needs-backport')
+    # Run when EITHER:
+    #   - manually dispatched, or
+    #   - a PR was actually merged AND carries the "needs-backport" label
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'needs-backport'))
     runs-on: ubuntu-latest
-    # Grant the workflow's GITHUB_TOKEN the scopes it needs:
+    # Grant the workflow's token the scopes it needs:
     #   contents: write       → push backport branches
     #   pull-requests: write  → open PRs, post comments
+    # NOTE: PRs opened with the default GITHUB_TOKEN do NOT trigger further
+    # workflows (e.g. CI on the backport PR). Use a GitHub App / fine-grained
+    # PAT if you need the backport PRs to run checks.
     permissions:
       contents: write
       pull-requests: write
 
+    env:
+      # Shared across steps. MERGE_COMMIT / PR_NUMBER come from the PR event when
+      # auto-triggered, or from the manual inputs when dispatched.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MERGE_COMMIT: ${{ github.event.pull_request.head.sha || inputs.merge_commit }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      # Pin all PRs/comments to THIS repo (the fork). Without this, `gh` on a
+      # fork can default the base to the upstream parent (e.g. aws/aws-lc).
+      BACKPORT_REPO: ${{ github.repository }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
     steps:
       # Checkout with full git history (fetch-depth: 0)
-      # Needed for git blame, git merge-base, and cherry-pick operations.
+      # Needed for git log -L, git merge-base, and cherry-pick operations.
       - name: Checkout repo with full history
         uses: actions/checkout@v4
         with:
@@ -49,28 +87,16 @@ jobs:
 
       # Install the Anthropic Python SDK (includes AnthropicBedrock client)
       # for AI-assisted impact analysis and conflict resolution.
-      # If AWS credentials are absent the AI paths are silently skipped.
       - name: Install Python dependencies
         run: pip install anthropic
 
-      # Run the bot script with environment variables:
-      #   GITHUB_TOKEN           → authenticates `gh` CLI and `git push`
-      #   PR_NUMBER              → the merged PR that triggered this run
-      #   MERGE_COMMIT           → the actual fix commit on the source branch.
-      #                            We use `head.sha` (not `merge_commit_sha`) because
-      #                            the merge commit itself has no diff of its own —
-      #                            diff/blame/cherry-pick all need the real fix commit.
-      #   AWS_ACCESS_KEY_ID      → IAM credentials for Amazon Bedrock (Claude API).
-      #   AWS_SECRET_ACCESS_KEY  → Store both as repo/org secrets.
-      #   AWS_SESSION_TOKEN      → Required only when using temporary STS credentials.
-      #   AWS_REGION             → Bedrock region (default us-east-1 if omitted).
+      # Fail loudly if anything the bot depends on is misconfigured (bad model
+      # id, missing creds, gh not authed, etc.) BEFORE attempting a backport —
+      # otherwise the AI/PR steps would silently no-op.
+      - name: Pre-flight smoke test
+        run: python scripts/smoke_test.py
+
+      # Run the bot. Skipped when "smoke_test_only" was requested on a manual run.
       - name: Run backport bot
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          MERGE_COMMIT: ${{ github.event.pull_request.head.sha }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.smoke_test_only }}
         run: python scripts/backport_bot.py
