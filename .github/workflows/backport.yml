@@ -43,12 +43,14 @@ jobs:
     # Grant the workflow's token the scopes it needs:
     #   contents: write       → push backport branches
     #   pull-requests: write  → open PRs, post comments
+    #   id-token: write       → request a GitHub OIDC token to assume the AWS role
     # NOTE: PRs opened with the default GITHUB_TOKEN do NOT trigger further
     # workflows (e.g. CI on the backport PR). Use a GitHub App / fine-grained
     # PAT if you need the backport PRs to run checks.
     permissions:
       contents: write
       pull-requests: write
+      id-token: write
 
     env:
       # Shared across steps. MERGE_COMMIT / PR_NUMBER come from the PR event when
@@ -59,9 +61,8 @@ jobs:
       # Pin all PRs/comments to THIS repo (the fork). Without this, `gh` on a
       # fork can default the base to the upstream parent (e.g. aws/aws-lc).
       BACKPORT_REPO: ${{ github.repository }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      # Bedrock region. AWS creds are NOT stored as secrets anymore — they are
+      # minted at runtime by assuming an IAM role via GitHub OIDC (see below).
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
 
     steps:
@@ -90,6 +91,17 @@ jobs:
       # for AI-assisted impact analysis and conflict resolution.
       - name: Install Python dependencies
         run: pip install "anthropic[bedrock]"
+
+      # Assume an AWS IAM role via GitHub OIDC. This mints short-lived
+      # credentials and exports them (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY /
+      # _SESSION_TOKEN) into the job env, where boto3 / AnthropicBedrock pick
+      # them up automatically. No static AWS secrets required.
+      # Set the role ARN once: `gh variable set AWS_BACKPORT_ROLE_ARN --body <arn>`
+      - name: Configure AWS credentials (OIDC role assumption)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_BACKPORT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       # Fail loudly if anything the bot depends on is misconfigured (bad model
       # id, missing creds, gh not authed, etc.) BEFORE attempting a backport —
