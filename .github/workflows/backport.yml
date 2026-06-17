@@ -85,10 +85,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Install the Anthropic Python SDK (includes AnthropicBedrock client)
+      # Install the Anthropic Python SDK with the Bedrock extra (pulls in
+      # boto3/botocore, required by the AnthropicBedrock client for AWS auth)
       # for AI-assisted impact analysis and conflict resolution.
       - name: Install Python dependencies
-        run: pip install anthropic
+        run: pip install "anthropic[bedrock]"
 
       # Fail loudly if anything the bot depends on is misconfigured (bad model
       # id, missing creds, gh not authed, etc.) BEFORE attempting a backport —
