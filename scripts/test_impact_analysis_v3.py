@@ -14,8 +14,10 @@ Run from project root: python3 scripts/test_impact_analysis_v3.py
 """
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,7 +52,9 @@ GROUND_TRUTH = {
     "cve-handshake-original": {
         # Bounds check on process_handshake. FIPS-2020 lacks crypto.c.
         # FIPS-2025 already has the same fix cherry-picked.
-        "AWS-LC-FIPS-2021", "AWS-LC-FIPS-2022", "AWS-LC-FIPS-2023",
+        "AWS-LC-FIPS-2021",
+        "AWS-LC-FIPS-2022",
+        "AWS-LC-FIPS-2023",
         "AWS-LC-FIPS-2021",
         "AWS-LC-FIPS-2022",
         "AWS-LC-FIPS-2023",
@@ -100,68 +104,58 @@ GROUND_TRUTH = {
 
 def simulate_cherry_pick(commit, branch):
     """
-    Attempt a cherry-pick without pushing. Returns (status, detail).
-    status is one of: 'clean', 'conflict', 'empty', 'error'.
+    Attempt a cherry-pick of `commit` onto `origin/<branch>` and report the
+    outcome without pushing. Returns (status, detail) where status is one of:
+    'clean', 'conflict', 'empty', 'error'.
+
+    Runs entirely inside a throwaway `git worktree` (detached at origin/<branch>),
+    so it never checks out, stashes, or otherwise disturbs the caller's working
+    tree. This makes the simulation safe to run with uncommitted local changes.
     """
-    saved = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-    short = subprocess.run(
-        ["git", "rev-parse", "--short", commit],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    temp = f"_test_pick_{branch}_{short}"
-
-    # Wipe stale temp branch
-    subprocess.run(
-        ["git", "branch", "-D", temp],
-        capture_output=True,
-        text=True,
-    )
+    parent = tempfile.mkdtemp(prefix="v3-cp-")
+    worktree = os.path.join(parent, "wt")
 
     try:
-        create = subprocess.run(
-            ["git", "checkout", "-b", temp, f"origin/{branch}"],
+        add = subprocess.run(
+            ["git", "worktree", "add", "--detach", worktree, f"origin/{branch}"],
             capture_output=True,
             text=True,
         )
-        if create.returncode != 0:
-            return ("error", f"checkout failed: {create.stderr.strip()}")
+        if add.returncode != 0:
+            return ("error", f"worktree add failed: {add.stderr.strip()}")
 
         pick = subprocess.run(
-            ["git", "cherry-pick", commit],
+            ["git", "-C", worktree, "cherry-pick", commit],
             capture_output=True,
             text=True,
         )
         if pick.returncode == 0:
             return ("clean", None)
 
-        # Non-zero: could be conflict or empty
-        stderr_lower = pick.stderr.lower()
-        if "empty" in stderr_lower or "nothing to commit" in stderr_lower:
-            return ("empty", pick.stderr.strip().splitlines()[0])
-        return ("conflict", pick.stderr.strip().splitlines()[0])
+        # Non-zero: distinguish an empty (already-applied) pick from a conflict.
+        combined = (pick.stdout + pick.stderr).lower()
+        if "empty" in combined or "nothing to commit" in combined:
+            detail = (pick.stdout + pick.stderr).strip().splitlines()
+            return ("empty", detail[0] if detail else "empty")
+        detail = (pick.stdout + pick.stderr).strip().splitlines()
+        return ("conflict", detail[0] if detail else "conflict")
 
     finally:
-        # Cleanup whatever state we ended up in
+        # Abort any in-progress pick, then tear the worktree down completely.
         subprocess.run(
-            ["git", "cherry-pick", "--abort"],
+            ["git", "-C", worktree, "cherry-pick", "--abort"],
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["git", "checkout", saved],
+            ["git", "worktree", "remove", "--force", worktree],
             capture_output=True,
             text=True,
         )
+        shutil.rmtree(parent, ignore_errors=True)
+        # Drop any administrative leftovers (safe no-op if already clean).
         subprocess.run(
-            ["git", "branch", "-D", temp],
+            ["git", "worktree", "prune"],
             capture_output=True,
             text=True,
         )
@@ -192,7 +186,7 @@ def run_scenario(tag):
     t0 = time.perf_counter()
     branch_data = {}
     for branch in TEST_BRANCHES:
-        affected = is_branch_affected(introducers, branch)
+        affected, _ = is_branch_affected(introducers, branch)
         if not affected:
             branch_data[branch] = {
                 "verdict": False,
@@ -231,6 +225,15 @@ def run_scenario(tag):
 
 
 def main():
+    # Contract guard: is_branch_affected must return (affected, advisory).
+    # If this ever drifts back to a bare bool, the `affected, _ = ...` call
+    # sites below would silently treat every branch as affected.
+    _probe = is_branch_affected(set(), TEST_BRANCHES[0])
+    assert isinstance(_probe, tuple) and len(_probe) == 2, (
+        "is_branch_affected must return a 2-tuple (affected, advisory); "
+        f"got {_probe!r}. Update the call sites if the contract changed."
+    )
+
     summary = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
     cp_summary = {"clean": 0, "conflict": 0, "empty": 0, "error": 0}
     total_time = 0.0
@@ -339,6 +342,7 @@ def main():
             f"  {tag:<32} {s['TP']:<4} {s['TN']:<4} {s['FP']:<4} {s['FN']:<4} "
             f"{c['clean']:<6} {c['conflict']:<9} {c['empty']:<6}"
         )
+
 
 if __name__ == "__main__":
     main()

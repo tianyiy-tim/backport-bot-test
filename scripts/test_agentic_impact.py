@@ -53,7 +53,7 @@ def main():
     print(f"{'-' * 20} {'-' * 15} {'-' * 28} {'-' * 8}")
 
     for branch in TEST_BRANCHES:
-        det_affected = is_branch_affected(introducers, branch)
+        det_affected, _ = is_branch_affected(introducers, branch)
 
         if det_affected:
             # Deterministic already flagged it; no need to ask the agent.

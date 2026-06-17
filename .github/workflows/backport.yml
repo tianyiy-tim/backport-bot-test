@@ -47,16 +47,30 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Install the Anthropic Python SDK (includes AnthropicBedrock client)
+      # for AI-assisted impact analysis and conflict resolution.
+      # If AWS credentials are absent the AI paths are silently skipped.
+      - name: Install Python dependencies
+        run: pip install anthropic
+
       # Run the bot script with environment variables:
-      #   GITHUB_TOKEN  → authenticates `gh` CLI and `git push`
-      #   PR_NUMBER     → the merged PR that triggered this run
-      #   MERGE_COMMIT  → the actual fix commit on the source branch.
-      #                   We use `head.sha` (not `merge_commit_sha`) because
-      #                   the merge commit itself has no diff of its own —
-      #                   diff/blame/cherry-pick all need the real fix commit.
+      #   GITHUB_TOKEN           → authenticates `gh` CLI and `git push`
+      #   PR_NUMBER              → the merged PR that triggered this run
+      #   MERGE_COMMIT           → the actual fix commit on the source branch.
+      #                            We use `head.sha` (not `merge_commit_sha`) because
+      #                            the merge commit itself has no diff of its own —
+      #                            diff/blame/cherry-pick all need the real fix commit.
+      #   AWS_ACCESS_KEY_ID      → IAM credentials for Amazon Bedrock (Claude API).
+      #   AWS_SECRET_ACCESS_KEY  → Store both as repo/org secrets.
+      #   AWS_SESSION_TOKEN      → Required only when using temporary STS credentials.
+      #   AWS_REGION             → Bedrock region (default us-east-1 if omitted).
       - name: Run backport bot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_COMMIT: ${{ github.event.pull_request.head.sha }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
         run: python scripts/backport_bot.py

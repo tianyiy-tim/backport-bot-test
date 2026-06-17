@@ -126,7 +126,7 @@ def run_scenario(tag):
     bot_verdict = {}
     bot_reason = {}
     for branch in TEST_BRANCHES:
-        affected = is_branch_affected(introducers, branch)
+        affected, _ = is_branch_affected(introducers, branch)
         if not affected:
             bot_verdict[branch] = False
             bot_reason[branch] = "not_affected"
