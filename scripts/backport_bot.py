@@ -471,13 +471,14 @@ def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
     )
 
     try:
-        response = client.messages.stream(
+        with client.messages.stream(
             model=_BEDROCK_MODEL_ID,
             max_tokens=1024,
             thinking={"type": "adaptive"},
             system=system,
             messages=[{"role": "user", "content": user}],
-        ).get_final_message()
+        ) as stream:
+            response = stream.get_final_message()
     except Exception as exc:
         print(f"[ai_impact_analysis] API call failed: {exc}", file=sys.stderr)
         return None
@@ -597,13 +598,14 @@ def ai_conflict_resolution(commit, branch, conflict_output):
     )
 
     try:
-        response = client.messages.stream(
+        with client.messages.stream(
             model=_BEDROCK_MODEL_ID,
             max_tokens=2048,
             thinking={"type": "adaptive"},
             system=system,
             messages=[{"role": "user", "content": user}],
-        ).get_final_message()
+        ) as stream:
+            response = stream.get_final_message()
     except Exception as exc:
         print(f"[ai_conflict_resolution] API call failed: {exc}", file=sys.stderr)
         return None

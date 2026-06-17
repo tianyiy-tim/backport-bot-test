@@ -85,13 +85,14 @@ def check_bedrock_live():
         )
         return False
     try:
-        msg = client.messages.stream(
+        with client.messages.stream(
             model=backport_bot._BEDROCK_MODEL_ID,
             max_tokens=1024,
             thinking={"type": "adaptive"},
             system="You are a connectivity probe. Reply with a single word.",
             messages=[{"role": "user", "content": "Reply with the word: OK"}],
-        ).get_final_message()
+        ) as stream:
+            msg = stream.get_final_message()
         text = "".join(b.text for b in msg.content if hasattr(b, "text")).strip()
         record(
             "Bedrock reachable (live ping)",
