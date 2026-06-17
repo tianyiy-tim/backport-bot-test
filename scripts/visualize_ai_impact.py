@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from backport_bot import (  # noqa: E402
     _BEDROCK_MODEL_ID,
     _ai_client,
+    _get_file_on_branch,
     ai_impact_analysis,
     find_introducing_commit,
     get_changed_files,
@@ -92,22 +93,39 @@ def analyze(commit, branches, truth_set):
     print(f"  introducer(s): {short_intro}")
     print("=" * 90)
 
-    rows = []  # (scenario, branch, det, ai_verdict, truth)
+    rows = []  # (scenario, branch, det, ai_verdict, truth, ai_consulted)
     for branch in branches:
         det_affected, _ = is_branch_affected(introducers, branch)
         truth = (branch in truth_set) if truth_set is not None else None
-
-        advisory = ai_impact_analysis(commit, branch, files, introducers)
+        truth_str = "" if truth is None else f" | ground truth: {verdict_word(truth)}"
+        branch_ref = f"origin/{branch}"
 
         print(f"\n── {branch} {'─' * (60 - len(branch))}")
+
+        # Deterministic short-circuit (mirrors the bot): if none of the files the
+        # fix touches exist on this branch under any name, the vulnerable code was
+        # never introduced here -> NOT affected. The AI is not consulted.
+        present = [
+            f
+            for f in files
+            if _get_file_on_branch(f, branch_ref, commit=commit)[0] is not None
+        ]
+        if not present:
+            print(
+                f"  deterministic: NOT affected (no fixed file exists on this "
+                f"branch under any name) — AI not consulted{truth_str}"
+            )
+            rows.append((commit, branch, det_affected, False, truth, False))
+            continue
+
+        advisory = ai_impact_analysis(commit, branch, files, introducers)
         if advisory is None:
             print("  AI: (no response — see stderr for the API error)")
-            rows.append((commit, branch, det_affected, None, truth))
+            rows.append((commit, branch, det_affected, None, truth, True))
             continue
 
         ai_v = advisory["likely_affected"]
         conf = advisory["confidence"]
-        truth_str = "" if truth is None else f" | ground truth: {verdict_word(truth)}"
         print(
             f"  deterministic: {verdict_word(det_affected)}"
             f" | AI: {verdict_word(ai_v)} (confidence: {conf}){truth_str}"
@@ -117,7 +135,7 @@ def analyze(commit, branches, truth_set):
             agree = "  ✓ matches truth" if ai_v == truth else "  ✗ DIFFERS from truth"
         print(f"  AI reasoning:{agree}")
         print(indent(advisory["reasoning"]))
-        rows.append((commit, branch, det_affected, ai_v, truth))
+        rows.append((commit, branch, det_affected, ai_v, truth, True))
 
     return rows
 
@@ -139,8 +157,10 @@ def print_tally(all_rows):
     have_truth = [r for r in all_rows if r[4] is not None]
     if not have_truth:
         return
+    consulted = [r for r in have_truth if r[5]]
+    file_resolved = [r for r in have_truth if not r[5]]
     tp = fp = fn = tn = unknown = 0
-    for _scenario, _branch, _det, ai_v, truth in have_truth:
+    for _scenario, _branch, _det, ai_v, truth, _c in consulted:
         if ai_v is None:
             unknown += 1
             continue
@@ -155,7 +175,7 @@ def print_tally(all_rows):
     scored = tp + fp + fn + tn
     acc = (tp + tn) / scored * 100 if scored else 0
     print("\n" + "=" * 90)
-    print("AI vs. ground truth")
+    print("AI vs. ground truth (only branches where the AI was actually consulted)")
     print("=" * 90)
     print(f"  true positives:  {tp}")
     print(f"  true negatives:  {tn}")
@@ -163,6 +183,12 @@ def print_tally(all_rows):
     print(f"  false negatives: {fn}   (AI under-flags — would MISS a backport)")
     print(f"  uncertain/no-answer: {unknown}")
     print(f"  accuracy (excl. uncertain): {acc:.1f}%")
+    if file_resolved:
+        print("\n  resolved deterministically before the AI — no fixed file exists on")
+        print(
+            f"  the branch under any name, so NOT affected: {len(file_resolved)} "
+            f"(these used to show up as AI 'uncertain')"
+        )
     print("\n  Reminder: in the real bot the AI is advisory only — it never flips a")
     print(
         "  deterministic 'affected' to 'skip'. This view is purely to judge its quality."
@@ -175,15 +201,17 @@ def print_comparison(all_rows):
     if not rows:
         print("\n(no ground truth — skipping deterministic-vs-AI comparison)")
         return
+    consulted = [r for r in rows if r[5]]
+    file_resolved = [r for r in rows if not r[5]]
 
-    def tally(use_ai):
+    def tally(subset, use_ai):
         c = {"TP": 0, "TN": 0, "FP": 0, "FN": 0, "uncertain": 0}
-        for _scenario, _branch, det, ai, truth in rows:
+        for _scenario, _branch, det, ai, truth, _c in subset:
             c[_classify(ai if use_ai else det, truth)] += 1
         return c
 
-    d = tally(use_ai=False)
-    a = tally(use_ai=True)
+    d = tally(rows, use_ai=False)
+    a = tally(consulted, use_ai=True)  # AI only judged where it was consulted
     d_dec = d["TP"] + d["TN"] + d["FP"] + d["FN"]
     a_dec = a["TP"] + a["TN"] + a["FP"] + a["FN"]
     d_acc = (d["TP"] + d["TN"]) / d_dec * 100 if d_dec else 0
@@ -192,7 +220,7 @@ def print_comparison(all_rows):
     print("\n" + "=" * 90)
     print("Deterministic (git log -L ancestry) vs AI advisory")
     print("=" * 90)
-    print(f"  {'metric':<28}{'deterministic':>16}{'AI':>16}")
+    print(f"  {'metric':<28}{'deterministic':>16}{'AI (consulted)':>16}")
     print(f"  {'-' * 28}{'-' * 16}{'-' * 16}")
     print(f"  {'true positives':<28}{d['TP']:>16}{a['TP']:>16}")
     print(f"  {'true negatives':<28}{d['TN']:>16}{a['TN']:>16}")
@@ -201,13 +229,13 @@ def print_comparison(all_rows):
     print(f"  {'uncertain / no-answer':<28}{'n/a':>16}{a['uncertain']:>16}")
     print(f"  {'accuracy (of decisive)':<28}{d_acc:>15.1f}%{a_acc:>15.1f}%")
 
-    # Where the two methods diverge.
-    fn_rescued = [r for r in rows if (not r[2] and r[4]) and r[3] is True]
-    fp_rescued = [r for r in rows if (r[2] and not r[4]) and r[3] is False]
+    # Where the two methods diverge (only meaningful where the AI was consulted).
+    fn_rescued = [r for r in consulted if (not r[2] and r[4]) and r[3] is True]
+    fp_rescued = [r for r in consulted if (r[2] and not r[4]) and r[3] is False]
     regressions = [
-        r for r in rows if (r[2] == r[4]) and r[3] is not None and r[3] != r[4]
+        r for r in consulted if (r[2] == r[4]) and r[3] is not None and r[3] != r[4]
     ]
-    hedged = [r for r in rows if (r[2] == r[4]) and r[3] is None]
+    hedged = [r for r in consulted if (r[2] == r[4]) and r[3] is None]
 
     print()
     print("  Where the two methods differ:")
@@ -224,6 +252,11 @@ def print_comparison(all_rows):
     for scenario, branch, *_ in regressions:
         print(f"        ! {scenario} / {branch}")
     print(f"    deterministic correct, AI hedged (uncertain): {len(hedged)}")
+    if file_resolved:
+        print(
+            f"    resolved by file-existence (deterministic, before AI): "
+            f"{len(file_resolved)}"
+        )
 
     net = len(fn_rescued) + len(fp_rescued) - len(regressions)
     print()
@@ -231,10 +264,13 @@ def print_comparison(all_rows):
         f"  Net effect of layering AI on the deterministic baseline: "
         f"{'+' if net >= 0 else ''}{net} corrected decision(s)."
     )
-    print("    In production the AI only runs where deterministic says 'not affected',")
-    print("    so its real job is exactly the 'false-neg rescued' row — turning silent")
-    print("    deterministic misses into human-reviewed advisories. It never flips a")
-    print("    deterministic 'affected' to 'skip'.")
+    print("    In production the AI only runs where deterministic says 'not affected'")
+    print("    AND at least one fixed file is present, so its real job is the")
+    print(
+        "    'false-neg rescued' row. Branches missing the file entirely are resolved"
+    )
+    print("    deterministically (no AI call). It never flips a deterministic")
+    print("    'affected' to 'skip'.")
 
 
 def main():

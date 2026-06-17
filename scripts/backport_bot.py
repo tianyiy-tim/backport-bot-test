@@ -229,17 +229,21 @@ def is_branch_affected(
     """
     Check if the branch contains the vulnerable code.
 
-    Three paths:
+    Paths:
     1. Direct ancestry — introducer SHA is in the branch's history.
     2. Cherry-pick equivalence — the introducer's *content* (patch-id) matches
        a commit on the branch, even if the SHA is different. This catches the
        common case where a feature was cherry-picked to a release branch and
        got a new SHA in the process.
-    3. AI advisory (fallback) — if both deterministic paths are inconclusive,
-       call Claude for an advisory assessment. The result is recorded but the
-       function still returns False so that the human-reviewed backport PR is
-       opened only when deterministic evidence exists. The advisory text is
-       attached to the summary comment separately.
+    3. File existence (deterministic) — if the fix touches only files that don't
+       exist on the branch (under the current path or any pre-rename name), the
+       vulnerable code was never introduced here, so the branch is NOT affected.
+    4. AI advisory (fallback) — if the deterministic paths are inconclusive AND
+       at least one fixed file is present, call Claude for an advisory
+       assessment. The result is recorded but the function still returns False
+       so that the human-reviewed backport PR is opened only when deterministic
+       evidence exists. The advisory text is attached to the summary comment
+       separately.
 
     Returns (affected: bool, ai_advisory: dict | None).
     """
@@ -266,6 +270,20 @@ def is_branch_affected(
         pid = _patch_id_of(sha)
         if pid and pid in branch_pids:
             return True, None
+
+    # Path 2.5: file existence. If the fix only touches files that don't exist
+    # on this branch (under the current path OR any pre-rename name), the
+    # vulnerable code was never introduced here — a confident, AI-free
+    # "not affected". This also spares a pointless AI call on branches that
+    # predate the code. (Only withheld if some fixed file IS present, in which
+    # case we still fall through to the AI advisory below.)
+    if changed_files:
+        any_present = any(
+            _get_file_on_branch(f, ref, commit=commit)[0] is not None
+            for f in changed_files
+        )
+        if not any_present:
+            return False, None
 
     # Path 3: AI advisory when both deterministic paths are inconclusive.
     # We still return False so that the bot does not auto-backport on AI
@@ -488,17 +506,50 @@ def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
 
     fix_diff = _get_commit_diff(commit)
 
-    # Collect relevant file snapshots from the branch
+    # Collect relevant file snapshots from the branch, tracking which fixed
+    # files are genuinely absent (not found under the current path OR any
+    # pre-rename path) so we can tell the model "verified not present" rather
+    # than the ambiguous "(not available)".
     file_context_parts = []
+    absent_files = []
     branch_ref = f"origin/{branch}"
     for f in changed_files[:6]:  # limit number of files to control prompt size
         content, resolved = _get_file_on_branch(f, branch_ref, commit=commit)
         if content:
             label = f if resolved == f else f"{resolved} (pre-rename path of {f})"
             file_context_parts.append(f"### {label} (on {branch})\n```\n{content}\n```")
+        else:
+            absent_files.append(f)
     file_context = (
-        "\n\n".join(file_context_parts) if file_context_parts else "(not available)"
+        "\n\n".join(file_context_parts)
+        if file_context_parts
+        else "(none of the files modified by the fix were found on this branch)"
     )
+
+    # Explicit absence signal. Distinguishes "verified not present on the branch
+    # under any name" from "could not retrieve", so the model can reason that
+    # code introduced after the branch forked simply isn't there yet.
+    absence_note = ""
+    if absent_files:
+        all_absent = not file_context_parts
+        absence_note = (
+            "\n\n### Files modified by the fix that are NOT present on this branch\n"
+            "(verified against the current path AND every prior path via rename "
+            "history):\n" + "\n".join(f"- {f}" for f in absent_files)
+        )
+        if all_absent:
+            absence_note += (
+                "\n\nNone of the fixed files exist on this branch under any name. "
+                "That almost always means the vulnerable code was introduced AFTER "
+                "this branch diverged, so the branch is NOT affected. Only withhold "
+                "that conclusion if you have concrete evidence the same logic was "
+                "copied into a differently-named file on this branch."
+            )
+        else:
+            absence_note += (
+                "\n\nThese specific files are absent (likely added after this branch "
+                "diverged); base your assessment on the files that ARE shown above."
+            )
 
     introducer_list = ", ".join(list(introducing_commits)[:5]) or "(none found)"
 
@@ -511,8 +562,11 @@ def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
         "- Your analysis is ADVISORY ONLY. It will be surfaced in a GitHub PR comment "
         "for human review and must never be automatically applied or acted on.\n"
         "- Do not speculate beyond what the code evidence shows.\n"
-        "- If the diff or file contents are truncated or unclear, say so and lower your "
-        "confidence accordingly.\n"
+        "- If a file modified by the fix is reported as NOT present on the branch "
+        "(verified across rename history), treat that as positive evidence the branch "
+        "predates the code and is not affected — not as missing information.\n"
+        "- If the diff or file contents are truncated or genuinely unclear, say so and "
+        "lower your confidence accordingly.\n"
         "- Output must be plain Markdown suitable for a GitHub comment."
     )
 
@@ -524,7 +578,7 @@ def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
         f"### Patch diff (what the fix changes on main)\n"
         f"```diff\n{fix_diff}\n```\n\n"
         f"### Relevant files on the target branch\n"
-        f"{file_context}\n\n"
+        f"{file_context}{absence_note}\n\n"
         f"---\n"
         f"Deterministic ancestry checks (SHA ancestry and patch-id matching) were "
         f"inconclusive for this branch. Please assess:\n\n"
