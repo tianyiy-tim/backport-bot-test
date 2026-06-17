@@ -24,7 +24,11 @@ _AI_MAX_FILE_BYTES = 15_000  # cap per-file context bytes fed to the model
 
 # Bedrock cross-region inference profile for Claude Opus 4.8.
 # Verify the exact ID in the AWS Bedrock console under "Cross-region inference".
-_BEDROCK_MODEL_ID = "us.anthropic.claude-opus-4-8-20251101-v1:0"
+# Overridable via env so you can try alternates (e.g. "us.anthropic.claude-opus-4-8")
+# without editing code.
+_BEDROCK_MODEL_ID = os.environ.get(
+    "BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-8-20251101-v1:0"
+)
 
 # --- Configuration ---
 
