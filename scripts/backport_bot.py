@@ -389,17 +389,81 @@ def _get_commit_diff(commit):
     return result.stdout[:_AI_MAX_DIFF_BYTES]
 
 
-def _get_file_on_branch(file_path, branch_ref):
-    """Return the contents of *file_path* as it exists on *branch_ref* (capped)."""
+def _show_file(ref, path):
+    """Raw contents of *path* at *ref*, or None if it doesn't exist there."""
     result = subprocess.run(
-        ["git", "show", f"{branch_ref}:{file_path}"],
+        ["git", "show", f"{ref}:{path}"],
         capture_output=True,
         text=True,
         errors="replace",
     )
     if result.returncode != 0:
         return None
-    return result.stdout[:_AI_MAX_FILE_BYTES]
+    return result.stdout
+
+
+def _historical_paths(commit, file_path, limit=6):
+    """
+    Ordered list of paths *file_path* has occupied over its history (following
+    renames) as of *commit*: the current path first, then progressively older
+    names. Lets us locate the file on a release branch that forked BEFORE a
+    rename (e.g. crypto/handshake.c was crypto.c, which is what an old branch
+    still has).
+    """
+    paths = [file_path]
+    result = subprocess.run(
+        [
+            "git",
+            "log",
+            "--follow",
+            "--name-status",
+            "--format=",
+            commit,
+            "--",
+            file_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return paths
+    seen = {file_path}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        # Rename entries look like: R100<TAB>old/path<TAB>new/path
+        if parts and parts[0].startswith("R") and len(parts) >= 3:
+            old = parts[1].strip()
+            if old and old not in seen:
+                paths.append(old)
+                seen.add(old)
+                if len(paths) >= limit:
+                    break
+    return paths
+
+
+def _get_file_on_branch(file_path, branch_ref, commit=None):
+    """
+    Return (content, resolved_path) for *file_path* as it exists on *branch_ref*
+    (content capped at _AI_MAX_FILE_BYTES).
+
+    If the file isn't present at *file_path* on that branch — common when the
+    branch forked before a rename — and *commit* is given, follow the file's
+    rename history and try its earlier path(s) on the branch. This is what lets
+    the AI actually see the vulnerable code on pre-rename release branches.
+
+    Returns (None, None) if the file can't be found under any historical name.
+    """
+    content = _show_file(branch_ref, file_path)
+    if content is not None:
+        return content[:_AI_MAX_FILE_BYTES], file_path
+    if commit:
+        for older in _historical_paths(commit, file_path):
+            if older == file_path:
+                continue
+            content = _show_file(branch_ref, older)
+            if content is not None:
+                return content[:_AI_MAX_FILE_BYTES], older
+    return None, None
 
 
 def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
@@ -428,9 +492,10 @@ def ai_impact_analysis(commit, branch, changed_files, introducing_commits):
     file_context_parts = []
     branch_ref = f"origin/{branch}"
     for f in changed_files[:6]:  # limit number of files to control prompt size
-        content = _get_file_on_branch(f, branch_ref)
+        content, resolved = _get_file_on_branch(f, branch_ref, commit=commit)
         if content:
-            file_context_parts.append(f"### {f} (on {branch})\n```\n{content}\n```")
+            label = f if resolved == f else f"{resolved} (pre-rename path of {f})"
+            file_context_parts.append(f"### {label} (on {branch})\n```\n{content}\n```")
     file_context = (
         "\n\n".join(file_context_parts) if file_context_parts else "(not available)"
     )
@@ -553,10 +618,11 @@ def ai_conflict_resolution(commit, branch, conflict_output):
     file_context_parts = []
     branch_ref = f"origin/{branch}"
     for f in conflicted_files[:4]:
-        content = _get_file_on_branch(f, branch_ref)
+        content, resolved = _get_file_on_branch(f, branch_ref, commit=commit)
         if content:
+            label = f if resolved == f else f"{resolved} (pre-rename path of {f})"
             file_context_parts.append(
-                f"### {f} (on {branch} before cherry-pick)\n```\n{content}\n```"
+                f"### {label} (on {branch} before cherry-pick)\n```\n{content}\n```"
             )
     file_context = (
         "\n\n".join(file_context_parts) if file_context_parts else "(not available)"
