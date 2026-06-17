@@ -92,7 +92,7 @@ def analyze(commit, branches, truth_set):
     print(f"  introducer(s): {short_intro}")
     print("=" * 90)
 
-    rows = []  # (branch, det, ai_verdict, truth)
+    rows = []  # (scenario, branch, det, ai_verdict, truth)
     for branch in branches:
         det_affected, _ = is_branch_affected(introducers, branch)
         truth = (branch in truth_set) if truth_set is not None else None
@@ -102,7 +102,7 @@ def analyze(commit, branches, truth_set):
         print(f"\n── {branch} {'─' * (60 - len(branch))}")
         if advisory is None:
             print("  AI: (no response — see stderr for the API error)")
-            rows.append((branch, det_affected, None, truth))
+            rows.append((commit, branch, det_affected, None, truth))
             continue
 
         ai_v = advisory["likely_affected"]
@@ -117,17 +117,30 @@ def analyze(commit, branches, truth_set):
             agree = "  ✓ matches truth" if ai_v == truth else "  ✗ DIFFERS from truth"
         print(f"  AI reasoning:{agree}")
         print(indent(advisory["reasoning"]))
-        rows.append((branch, det_affected, ai_v, truth))
+        rows.append((commit, branch, det_affected, ai_v, truth))
 
     return rows
 
 
+def _classify(verdict, truth):
+    """verdict is True/False/None (None = uncertain); truth is bool."""
+    if verdict is None:
+        return "uncertain"
+    if verdict and truth:
+        return "TP"
+    if verdict and not truth:
+        return "FP"
+    if not verdict and truth:
+        return "FN"
+    return "TN"
+
+
 def print_tally(all_rows):
-    have_truth = [r for r in all_rows if r[3] is not None]
+    have_truth = [r for r in all_rows if r[4] is not None]
     if not have_truth:
         return
     tp = fp = fn = tn = unknown = 0
-    for _, _, ai_v, truth in have_truth:
+    for _scenario, _branch, _det, ai_v, truth in have_truth:
         if ai_v is None:
             unknown += 1
             continue
@@ -154,6 +167,74 @@ def print_tally(all_rows):
     print(
         "  deterministic 'affected' to 'skip'. This view is purely to judge its quality."
     )
+
+
+def print_comparison(all_rows):
+    """Head-to-head: deterministic (git log -L ancestry) vs AI vs ground truth."""
+    rows = [r for r in all_rows if r[4] is not None]
+    if not rows:
+        print("\n(no ground truth — skipping deterministic-vs-AI comparison)")
+        return
+
+    def tally(use_ai):
+        c = {"TP": 0, "TN": 0, "FP": 0, "FN": 0, "uncertain": 0}
+        for _scenario, _branch, det, ai, truth in rows:
+            c[_classify(ai if use_ai else det, truth)] += 1
+        return c
+
+    d = tally(use_ai=False)
+    a = tally(use_ai=True)
+    d_dec = d["TP"] + d["TN"] + d["FP"] + d["FN"]
+    a_dec = a["TP"] + a["TN"] + a["FP"] + a["FN"]
+    d_acc = (d["TP"] + d["TN"]) / d_dec * 100 if d_dec else 0
+    a_acc = (a["TP"] + a["TN"]) / a_dec * 100 if a_dec else 0
+
+    print("\n" + "=" * 90)
+    print("Deterministic (git log -L ancestry) vs AI advisory")
+    print("=" * 90)
+    print(f"  {'metric':<28}{'deterministic':>16}{'AI':>16}")
+    print(f"  {'-' * 28}{'-' * 16}{'-' * 16}")
+    print(f"  {'true positives':<28}{d['TP']:>16}{a['TP']:>16}")
+    print(f"  {'true negatives':<28}{d['TN']:>16}{a['TN']:>16}")
+    print(f"  {'false positives':<28}{d['FP']:>16}{a['FP']:>16}")
+    print(f"  {'false negatives (misses)':<28}{d['FN']:>16}{a['FN']:>16}")
+    print(f"  {'uncertain / no-answer':<28}{'n/a':>16}{a['uncertain']:>16}")
+    print(f"  {'accuracy (of decisive)':<28}{d_acc:>15.1f}%{a_acc:>15.1f}%")
+
+    # Where the two methods diverge.
+    fn_rescued = [r for r in rows if (not r[2] and r[4]) and r[3] is True]
+    fp_rescued = [r for r in rows if (r[2] and not r[4]) and r[3] is False]
+    regressions = [
+        r for r in rows if (r[2] == r[4]) and r[3] is not None and r[3] != r[4]
+    ]
+    hedged = [r for r in rows if (r[2] == r[4]) and r[3] is None]
+
+    print()
+    print("  Where the two methods differ:")
+    print(
+        f"    deterministic MISSED, AI caught it (false-neg rescued): {len(fn_rescued)}"
+    )
+    for scenario, branch, *_ in fn_rescued:
+        print(f"        + {scenario} / {branch}")
+    if fp_rescued:
+        print(f"    deterministic over-flagged, AI cleared it: {len(fp_rescued)}")
+        for scenario, branch, *_ in fp_rescued:
+            print(f"        + {scenario} / {branch}")
+    print(f"    deterministic correct, AI WRONG (regressions): {len(regressions)}")
+    for scenario, branch, *_ in regressions:
+        print(f"        ! {scenario} / {branch}")
+    print(f"    deterministic correct, AI hedged (uncertain): {len(hedged)}")
+
+    net = len(fn_rescued) + len(fp_rescued) - len(regressions)
+    print()
+    print(
+        f"  Net effect of layering AI on the deterministic baseline: "
+        f"{'+' if net >= 0 else ''}{net} corrected decision(s)."
+    )
+    print("    In production the AI only runs where deterministic says 'not affected',")
+    print("    so its real job is exactly the 'false-neg rescued' row — turning silent")
+    print("    deterministic misses into human-reviewed advisories. It never flips a")
+    print("    deterministic 'affected' to 'skip'.")
 
 
 def main():
@@ -197,6 +278,7 @@ def main():
         )
 
     print_tally(all_rows)
+    print_comparison(all_rows)
 
 
 if __name__ == "__main__":
