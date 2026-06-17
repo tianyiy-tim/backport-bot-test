@@ -101,11 +101,14 @@ def check_bedrock_live():
         )
         return True
     except Exception as exc:
+        cause = getattr(exc, "__cause__", None)
         record(
             "Bedrock reachable (live ping)",
             FAIL,
             f"call failed with model={backport_bot._BEDROCK_MODEL_ID} "
-            f"region={os.environ.get('AWS_REGION', 'us-east-1')}: {exc}",
+            f"region={os.environ.get('AWS_REGION', 'us-east-1')}: "
+            f"{type(exc).__name__}: {exc}"
+            + (f" | underlying: {type(cause).__name__}: {cause}" if cause else ""),
         )
         return False
 
