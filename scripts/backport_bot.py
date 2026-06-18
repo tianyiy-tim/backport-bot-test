@@ -386,11 +386,20 @@ def _ai_client():
     if _anthropic_module is None:
         return None
     region = os.environ.get("AWS_REGION", "us-east-1")
-    # Credentials are picked up automatically from the environment:
-    # AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+ optional AWS_SESSION_TOKEN)
-    # or an IAM role attached to the Actions runner.
-    if not os.environ.get("AWS_ACCESS_KEY_ID"):
-        return None
+    # Resolve credentials via the standard AWS chain — env vars, the shared
+    # ~/.aws/credentials file, SSO, or an attached IAM role — rather than only
+    # checking the AWS_ACCESS_KEY_ID env var, which misses creds that live in
+    # ~/.aws/credentials (e.g. from `ada credentials update`).
+    try:
+        import boto3
+
+        if boto3.Session().get_credentials() is None:
+            return None
+    except ImportError:
+        # boto3 ships with anthropic[bedrock]; if it's somehow absent, fall back
+        # to the env-var check.
+        if not os.environ.get("AWS_ACCESS_KEY_ID"):
+            return None
     return _anthropic_module.AnthropicBedrock(aws_region=region)
 
 
