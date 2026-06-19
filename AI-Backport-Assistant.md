@@ -10,28 +10,31 @@
 ## 1. One-paragraph summary (read this first)
 
 The backport decision is **fully deterministic**. The AI is a bounded **advisory second
-opinion** used at exactly two points where the deterministic pipeline is inconclusive:
-(1) **impact analysis** when git-history ancestry can't confirm whether a branch is
-affected, and (2) **cherry-pick conflict resolution**. AI output is human-readable text
-attached to the pull request — it is **never committed, never auto-applied, and never
-overrides a deterministic verdict.** It exists to turn the deterministic pipeline's
-*silent misses* into *human-reviewed advisories*.
+opinion** used at exactly one point where the deterministic pipeline is inconclusive:
+**impact analysis** when git-history ancestry can't confirm whether a branch is affected.
+AI output is human-readable text attached to the pull request, so it is **never
+committed, never auto-applied, and never overrides a deterministic verdict.** It exists
+to turn the deterministic pipeline's *silent misses* into *human-reviewed advisories*.
+Everything with a side effect (resolving branches, cherry-picking, opening PRs, posting
+the summary) stays in the deterministic engine; the AI only answers the *affected / not
+affected* question and hands its answer back for a human to read.
 
 ---
 
 ## 2. What the AI does (and does not)
 
-| | 1. Impact-analysis advisory | 2. Conflict-resolution advisory |
-|---|---|---|
-| **Trigger** | Deterministic impact analysis is *inconclusive* for a branch (SHA ancestry **and** patch-id both fail) **and** at least one file the fix touches is present on the branch | A cherry-pick to a branch fails with merge conflicts |
-| **Why it's needed** | `git log -L` ancestry has a known blind spot: when a vulnerable line's history is obscured by a **rename** or a **heavy rewrite**, it can land on the wrong introducer and **silently mark a still-vulnerable branch "not affected"** — a false negative, the dangerous direction | Diverged release branches frequently need manual conflict resolution — the step that consumes the most engineer time today |
-| **What it does** | Reads the fix diff + the branch's actual version of the affected file(s) and returns a verdict (affected / not / uncertain), a confidence level, and reasoning | Given the conflict output, the patch, and the conflicting files, proposes a concrete per-file resolution |
-| **What it does NOT do** | Does **not** trigger a backport. The deterministic verdict stands; the AI assessment is attached to the PR comment for a human | Does **not** apply or commit anything. The conflict is still flagged for a human; the suggestion is a starting point with an explicit "review before applying" warning |
+| | Impact-analysis advisory |
+|---|---|
+| **Trigger** | Deterministic impact analysis is *inconclusive* for a branch (SHA ancestry **and** patch-id both fail) **and** at least one file the fix touches is present on the branch |
+| **Why it's needed** | `git log -L` ancestry has a known blind spot: when a vulnerable line's history is obscured by a **rename** or a **heavy rewrite**, it can land on the wrong introducer and **silently mark a still-vulnerable branch "not affected"** — a false negative, the dangerous direction |
+| **What it does** | Reads the fix diff + the branch's actual version of the affected file(s) and returns a verdict (affected / not / uncertain), a confidence level, and reasoning |
+| **What it does NOT do** | Does **not** trigger a backport. The deterministic verdict stands; the AI assessment is attached to the PR comment for a human |
 
 ### Guardrails (why this is safe in a security-critical repo)
 - **Advisory-only.** AI output is text in a PR comment. It has no write access, runs no commands, and cannot merge or push.
-- **Never overrides deterministic findings.** The AI can only *add context* on branches the deterministic pipeline already marked "not affected" or "conflict." It can never suppress a deterministic "affected."
-- **Prompt-injection containment.** Even if attacker-influenced PR content manipulates the model, the worst case is a misleading suggestion a human dismisses — it cannot act.
+- **Impact analysis only.** The AI is consulted for the *affected / not affected* question and nothing else. It does not cherry-pick, open PRs, or resolve conflicts; those remain deterministic steps in `backport_bot.py`.
+- **Never overrides deterministic findings.** The AI can only *add context* on branches the deterministic pipeline already marked "not affected" as inconclusive. It can never suppress a deterministic "affected."
+- **Prompt-injection containment.** Even if attacker-influenced PR content manipulates the model, the worst case is a misleading advisory a human dismisses, as it cannot act.
 
 ### Where the AI sits in the pipeline
 
@@ -44,19 +47,21 @@ flowchart TD
     C -->|inconclusive AND file present| F[AI impact advisory]
     F -.advisory text only.-> G[Summary comment for human]
     D -->|clean| H[Open backport PR]
-    D -->|conflict| I[AI conflict-resolution advisory]
-    I -.advisory text only.-> H
+    D -->|conflict| K[Flag branch - manual backport]
+    K --> G
     H --> J[Human reviews and merges]
     G --> J
 ```
 
-The dotted lines are the only two AI inputs, and they both flow to a **human**, never to the automation.
+The dotted line is the only AI input, and it flows to a **human**, never to the
+automation. When a cherry-pick conflicts, the bot aborts the pick and flags the branch
+for a human engineer to backport by hand; the AI is not involved in that path.
 
 ---
 
 ## 3. What was built
 
-- **Two advisory functions** in `scripts/backport_bot.py` (`ai_impact_analysis`, `ai_conflict_resolution`), calling Claude on Amazon Bedrock via the Anthropic SDK.
+- **One advisory function** in `scripts/backport_bot.py` (`ai_impact_analysis`), calling Claude on Amazon Bedrock via the Anthropic SDK. It is consulted only for impact analysis on inconclusive branches; every step with a side effect stays deterministic.
 - **Rename-aware context gathering** — when a fix touches a file that was renamed, the bot resolves the file's *pre-rename* path on the target branch so the model can actually see the relevant code on older branches.
 - **A deterministic file-existence short-circuit** — if a fix touches only files that don't exist on a branch (under any current or prior name), the branch is concluded "not affected" deterministically, and the AI is not consulted at all.
 - **A local evaluation harness** (`scripts/visualize_ai_impact.py`) that runs the AI against the test fixture and scores it.

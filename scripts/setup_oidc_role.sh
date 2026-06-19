@@ -86,3 +86,4 @@ echo "Done."
 echo "  Role ARN: ${ROLE_ARN}"
 echo "  AWS_BACKPORT_ROLE_ARN variable set on ${REPO}."
 echo "Tell the assistant to re-run the smoke test."
+''

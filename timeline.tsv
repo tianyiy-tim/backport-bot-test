@@ -1,0 +1,13 @@
+Week	Dates	Milestone	Details
+1	Jun 1-5	Onboarding & Design	Dev environment setup, clone & build AWS-LC, first draft of design doc
+2	Jun 8-12	Design Review & POC	Incorporate feedback, finalize design doc; POC validates the core pipeline end-to-end in a test repo
+3	Jun 15-19	Productionize core pipeline	Port POC logic into the aws/aws-lc workflow, add VERSIONING.md end-of-support filtering, wire up the scoped credential (GitHub App or fine-grained PAT)
+4	Jun 22-26	Integration & hardening	Test against the real branch structure, label-gating, conflict and edge-case handling, end-to-end validation — MVP complete
+5	Jun 29-Jul 3	Stretch: AI impact analysis	Prototype agentic evaluation for ambiguous cases, with the prompt-injection guardrails
+6	Jul 6-10	Stretch: AI conflict resolution	Propose-diff layer that stays advisory and human-reviewed, never auto-applied
+7	Jul 13-17	Stretch: AI test generation / guardrail hardening	Generate impact-validation tests (sandboxed); harden and review the AI guardrails
+8	Jul 20-24	Bug test & security review	Fixing and polishing; review the AI approach against AppSec guidance
+9	Jul 27-31	Buffer / additional polish	Documentation, reviewer feedback, contingency for any stretch work that ran long
+10	Aug 3-7	Demo Prep	Prepare presentation, write up results, finalize docs
+11	Aug 10-14	Presentation Practice	Practice
+12	Aug 17-21	Final Presentation & Wrap-Up	End
