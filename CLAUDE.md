@@ -34,6 +34,13 @@ Exit code 0 = ready. Non-zero = at least one hard failure with a specific messag
 The test scripts exercise the deterministic pipeline against the synthetic fixture branches. Run from the repo root:
 
 ```bash
+# Real-world replay: reconstructs the actual aws/aws-lc manual backports that
+# motivated this project (a feature request + two simultaneous security issues,
+# P391092217 and V2128336380) in a sandbox repo whose branch fork-points
+# reproduce the documented impact, then asserts the deterministic engine's
+# verdict matches the manual outcome for every (branch x scenario) cell. No creds.
+python scripts/simulate_real_backports.py
+
 # Comprehensive: impact analysis + cherry-pick simulation across 7 CVE scenarios × 7 branches
 python scripts/test_impact_analysis_v3.py
 
