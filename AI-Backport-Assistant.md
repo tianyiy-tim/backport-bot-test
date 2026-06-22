@@ -87,7 +87,7 @@ hard cases* (renames, multi-file fixes, already-patched, code introduced in diff
 eras) that stress both the deterministic and the AI paths — something a real repo
 snapshot can't give us reproducibly.
 
-### 4.2 The test scenarios (7 CVE-style fixes)
+### 4.2 The test scenarios (7 security-style fixes)
 
 Each scenario is a real fix commit on the mainline; the test asks, for every branch,
 "is this branch affected?"
