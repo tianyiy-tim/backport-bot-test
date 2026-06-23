@@ -7,15 +7,19 @@ PATCH rather than a merged commit, so an embargoed security fix can be assessed
 
 Subcommands:
 
-  analyze <patch>     Materialize the patch on top of a base ref, then bucket
-                      every supported branch into AFFECTED / NOT AFFECTED /
-                      UNSURE / ALREADY PATCHED. Deterministic only (no AI, no
-                      network), and saves the run so the next commands reuse it.
+  analyze <patch>     Give a definite verdict for every supported branch:
+                      AFFECTED / NOT AFFECTED (or ALREADY PATCHED). The
+                      deterministic check (ancestry + patch-id + file presence)
+                      decides the clear branches; for any branch it cannot
+                      confirm, the AI advisory is consulted automatically to
+                      decide. If the AI is uncertain or unavailable, the branch
+                      is flagged AFFECTED for review, never silently dropped.
+                      Use --no-ai for a deterministic-only run (inconclusive
+                      branches are flagged AFFECTED). Saves the run.
 
-  explain [branch..]  Run the AI advisory on the UNSURE branches (or the ones
-                      you name) and print the model's verdict, confidence, and
-                      reasoning. Advisory only. This is the only command that
-                      sends code to Bedrock, and only when you ask for it.
+  explain [branch..]  Print the AI's full reasoning for the branches the
+                      deterministic check could not confirm (or the ones you
+                      name). Use this to see *why* analyze decided as it did.
 
   apply [--all-affected | --branches ..]
                       Cherry-pick the patch onto the chosen branches in LOCAL
@@ -25,8 +29,8 @@ Subcommands:
 Typical flow:
 
   git diff > fix.patch                 # the mainline fix, uncommitted is fine
-  ./backport analyze fix.patch
-  ./backport explain                   # optional: AI justification for unsure
+  ./backport analyze fix.patch         # affected / not affected for every branch
+  ./backport explain                   # optional: see the AI reasoning
   ./backport apply --all-affected      # local backport branches for review
 
 Run from anywhere inside the AWS-LC clone. The clone must have the release
@@ -284,33 +288,69 @@ def _is_empty_patch(patch_text):
     return not patch_text.strip()
 
 
+def resolve_unsure(fix_sha, files, introducers, buckets, use_ai=True):
+    """Turn every UNSURE branch into a definite AFFECTED / NOT_AFFECTED verdict.
+
+    The deterministic pass leaves a branch UNSURE when the fixed code is present
+    but ancestry/patch-id can't confirm the introducer reached it. Rather than
+    show that to the user, consult the AI advisory to decide.
+
+    Safety: if the AI is uncertain, returns no answer, or is unavailable, the
+    branch resolves to AFFECTED (flagged for review), never NOT_AFFECTED. So the
+    automatic resolution can only over-flag, never create a silent miss.
+
+    Returns (buckets, decided_by) where decided_by[branch] explains the verdict.
+    """
+    decided_by = {b: "deterministic" for b in buckets}
+    unsure = [b for b, s in buckets.items() if s == UNSURE]
+    for branch in unsure:
+        adv = (
+            bot.ai_impact_analysis(fix_sha, branch, files, introducers)
+            if use_ai
+            else None
+        )
+        if adv is None:
+            buckets[branch] = AFFECTED
+            decided_by[branch] = (
+                "inconclusive, --no-ai -> flagged for review"
+                if not use_ai
+                else "inconclusive, AI unavailable -> flagged for review"
+            )
+        elif adv.get("likely_affected") is True:
+            buckets[branch] = AFFECTED
+            decided_by[branch] = f"AI: likely affected ({adv.get('confidence')})"
+        elif adv.get("likely_affected") is False:
+            buckets[branch] = NOT_AFFECTED
+            decided_by[branch] = f"AI: likely not affected ({adv.get('confidence')})"
+        else:
+            buckets[branch] = AFFECTED
+            decided_by[branch] = (
+                f"AI: uncertain ({adv.get('confidence')}) -> flagged for review"
+            )
+    return buckets, decided_by
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
 
 
-def _print_summary(fix_sha, files, introducers, buckets):
+def _print_summary(fix_sha, files, introducers, buckets, decided_by):
     print(f"Fix commit (materialized): {fix_sha[:10]}")
     print(f"Changed files: {files}")
     print(f"Introducer(s): {[s[:8] for s in introducers] or '(none / new file)'}")
     print()
-    print(f"  {'branch':<22} {'status':<16}")
-    print(f"  {'-' * 22} {'-' * 16}")
+    print(f"  {'branch':<22} {'status':<16} basis")
+    print(f"  {'-' * 22} {'-' * 16} {'-' * 40}")
     for branch, state in buckets.items():
-        print(f"  {branch:<22} {_LABEL[state]:<16}")
+        print(f"  {branch:<22} {_LABEL[state]:<16} {decided_by.get(branch, '')}")
 
     def names(state):
         return [b for b, s in buckets.items() if s == state]
 
     print()
-    aff, uns, no, pat = (
-        names(AFFECTED),
-        names(UNSURE),
-        names(NOT_AFFECTED),
-        names(ALREADY),
-    )
+    aff, no, pat = names(AFFECTED), names(NOT_AFFECTED), names(ALREADY)
     print(f"Affected (need backport): {', '.join(aff) or '-'}")
-    print(f"Unsure (run `backport explain`): {', '.join(uns) or '-'}")
     print(f"Not affected: {', '.join(no) or '-'}")
     if pat:
         print(f"Already patched (skip): {', '.join(pat)}")
@@ -338,6 +378,17 @@ def cmd_analyze(args):
 
     with materialized_fix(patch_text, base, three_way=args.three_way) as fix_sha:
         files, introducers, buckets = bucket_branches(fix_sha, branches)
+        unsure = [b for b, s in buckets.items() if s == UNSURE]
+        use_ai = not args.no_ai
+        if unsure and use_ai and not args.json:
+            print(
+                f"{len(unsure)} branch(es) inconclusive by git history; "
+                f"consulting AI to decide...\n",
+                file=sys.stderr,
+            )
+        buckets, decided_by = resolve_unsure(
+            fix_sha, files, introducers, buckets, use_ai=use_ai
+        )
         if args.json:
             print(
                 json.dumps(
@@ -347,12 +398,13 @@ def cmd_analyze(args):
                         "changed_files": files,
                         "introducers": introducers,
                         "buckets": buckets,
+                        "decided_by": decided_by,
                     },
                     indent=2,
                 )
             )
         else:
-            _print_summary(fix_sha, files, introducers, buckets)
+            _print_summary(fix_sha, files, introducers, buckets, decided_by)
 
     _save_run(patch_text, base, branches, buckets)
     return 0
@@ -364,15 +416,17 @@ def cmd_explain(args):
         print("patch is empty; nothing to explain.")
         return 0
     with materialized_fix(patch_text, base, three_way=args.three_way) as fix_sha:
-        files, introducer_files = _changed_files_with_status(fix_sha)
-        introducers = bot.find_introducing_commit(fix_sha, introducer_files)
-        branches = args.branches or run["branches"]
-        buckets = run["buckets"] if run else bucket_branches(fix_sha, branches)[2]
+        branches = args.branches or (
+            run["branches"] if run else bot.get_supported_branches()
+        )
+        # Recompute the deterministic buckets so we know which branches were
+        # inconclusive (the saved run stores resolved verdicts, not UNSURE).
+        files, introducers, det_buckets = bucket_branches(fix_sha, branches)
 
-        targets = args.branches or [b for b, s in buckets.items() if s == UNSURE]
+        targets = args.branches or [b for b, s in det_buckets.items() if s == UNSURE]
         if not targets:
             print(
-                "Nothing to explain: no UNSURE branches. (Pass branch names to force.)"
+                "Nothing to explain: no inconclusive branches. (Pass branch names to force.)"
             )
             return 0
 
@@ -526,6 +580,12 @@ def main(argv=None):
     )
     pa.add_argument("patch", help="path to the fix patch (git diff or format-patch)")
     pa.add_argument("--branches", nargs="+", help="limit to these branches")
+    pa.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="deterministic only; do not consult the AI on inconclusive branches "
+        "(they are flagged AFFECTED for review instead)",
+    )
     pa.add_argument("--json", action="store_true", help="emit JSON")
     add_common(pa)
     pa.set_defaults(func=cmd_analyze)

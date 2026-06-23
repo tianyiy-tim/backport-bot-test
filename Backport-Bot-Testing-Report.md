@@ -66,6 +66,8 @@ The one remaining hole was the file-existence check itself being wrong, for exam
 
 `test_buckets.py` verifies the property on the full matrix: every truly-affected branch the deterministic check could not confirm lands in UNSURE, and zero land in "not affected". On the 49 cells, all 5 deterministic misses surfaced as UNSURE and none were silent.
 
+UNSURE is an internal state, not a verdict shown to the user. The `analyze` command resolves every UNSURE branch into a definite affected / not affected answer by consulting the AI advisory, and if the AI is uncertain or unavailable the branch resolves to affected (flagged for review), never to not affected. So the user always sees a clean verdict, and the chain of fallbacks (deterministic, then AI, then conservative flag) only ever over-flags, never drops an affected branch.
+
 The honest residual is stated in Section 7.
 
 ## 7. Known limitations
