@@ -16,9 +16,9 @@ Subcommands:
                       is flagged AFFECTED for review, never silently dropped.
                       Flags: --explain (print the reason behind each affected
                       branch), --no-ai (deterministic only, inconclusive ->
-                      flagged AFFECTED), --yes (skip the test-file prompt). Saves
-                      the run. Before analyzing it confirms the patch's test file
-                      (AWS-LC fixes ship a *_test.cc next to the change).
+                      flagged AFFECTED). Saves the run. Before analyzing it
+                      always asks you to confirm the patch's test file (AWS-LC
+                      fixes ship a *_test.cc next to the change).
 
   apply [--all-affected | --branches ..]
                       Cherry-pick the patch onto the chosen branches in LOCAL
@@ -306,7 +306,11 @@ def _patch_paths(patch_text):
 def _ask_yn(prompt):
     """Prompt until the user answers Y or N. Returns True for Y."""
     while True:
-        ans = input(f"{prompt} [Y/N] ").strip().lower()
+        try:
+            ans = input(f"{prompt} [Y/N] ").strip().lower()
+        except EOFError:
+            # no input available (e.g. stdin closed) -> treat as a safe abort
+            return False
         if ans in ("y", "yes"):
             return True
         if ans in ("n", "no"):
@@ -314,15 +318,14 @@ def _ask_yn(prompt):
         print("Please answer Y or N.")
 
 
-def _confirm_test_file(patch_text, skip):
+def _confirm_test_file(patch_text):
     """Confirm the patch's test file before analysis. Returns True to proceed.
 
     AWS-LC tests usually live next to the fix as a `*_test.cc` file in the same
     diff. If one is present, confirm it is the right test; if none is present,
-    confirm the user wants to proceed without one. Answering N aborts.
+    confirm the user wants to proceed without one. Answering N aborts. This
+    always prompts on the terminal and reads the answer.
     """
-    if skip or not sys.stdin.isatty():
-        return True
     tests = sorted(p for p in _patch_paths(patch_text) if p.endswith(_TEST_SUFFIXES))
     if tests:
         print(f"Test file found in the patch: {', '.join(tests)}")
@@ -452,7 +455,7 @@ def cmd_analyze(args):
 
     # Confirm the test file before doing anything (AWS-LC fixes ship a *_test.cc
     # next to the change). Answering N aborts until the user re-runs.
-    if not _confirm_test_file(patch_text, skip=args.yes):
+    if not _confirm_test_file(patch_text):
         print("Aborted. Re-run when your patch is ready.")
         return 0
 
@@ -635,11 +638,6 @@ def main(argv=None):
         action="store_true",
         help="deterministic only; do not consult the AI on inconclusive branches "
         "(they are flagged AFFECTED for review instead)",
-    )
-    pa.add_argument(
-        "--yes",
-        action="store_true",
-        help="skip the test-file confirmation prompt",
     )
     pa.add_argument("--json", action="store_true", help="emit JSON")
     add_common(pa)

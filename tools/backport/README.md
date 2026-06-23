@@ -30,10 +30,10 @@ get internal security issue
         -> push + open PRs for human review          (only when ready / post-embargo)
 ```
 
-Before it analyzes, `analyze` confirms your test file: AWS-LC fixes usually ship
-a `*_test.cc` next to the change in the same diff. If one is in the patch it asks
-you to confirm it; if none is, it asks whether to proceed without one. Answering
-N stops until you re-run. Pass `--yes` to skip the prompt.
+Before it analyzes, `analyze` always confirms your test file: AWS-LC fixes
+usually ship a `*_test.cc` next to the change in the same diff. If one is in the
+patch it asks you to confirm it; if none is, it asks whether to proceed without
+one. Answering N stops until you re-run.
 
 ## Commands
 
