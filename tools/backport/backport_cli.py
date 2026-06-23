@@ -513,16 +513,30 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
 
-    # Resolve any user-supplied patch path while we are still in the caller's
-    # cwd, then move to the repo toplevel so every git pathspec the engine uses
-    # is interpreted relative to the repo root (not this tools/ subdirectory).
-    if getattr(args, "patch", None):
-        args.patch = str(Path(args.patch).resolve())
     top = _git("rev-parse", "--show-toplevel", check=False)
     if top.returncode != 0:
         print("error: not inside a git repository", file=sys.stderr)
         return 1
-    os.chdir(top.stdout.strip())
+    top = top.stdout.strip()
+
+    # Resolve the patch path while still in the caller's cwd. Try it as given
+    # (relative to where you ran the command), then relative to the repo root,
+    # which is a common spot to drop a patch. Done before we chdir to the
+    # toplevel so the engine's repo-root-relative git paths resolve correctly.
+    if getattr(args, "patch", None):
+        given = Path(args.patch)
+        if given.exists():
+            args.patch = str(given.resolve())
+        elif (Path(top) / args.patch).exists():
+            args.patch = str((Path(top) / args.patch).resolve())
+        else:
+            print(
+                f"error: patch file not found: {args.patch}\n"
+                f"  looked in the current directory and at the repo root ({top}).",
+                file=sys.stderr,
+            )
+            return 1
+    os.chdir(top)
 
     try:
         return args.func(args)

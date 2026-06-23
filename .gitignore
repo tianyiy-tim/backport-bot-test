@@ -1,0 +1,2 @@
+# Transient patch inputs generated for the backport CLI (git diff > fix.patch, etc.)
+*.patch

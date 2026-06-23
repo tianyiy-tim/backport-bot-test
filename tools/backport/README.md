@@ -71,3 +71,6 @@ without re-passing them. Override with `--patch <file>` / `--base <ref>` anytime
 - **Results land as local branches** named `backport/<branch>/<shortsha>`.
   Inspect them with `git branch --list 'backport/*'`, then push and open PRs by
   hand when you are ready.
+- **Patch path** is resolved relative to your current directory first, then the
+  repo root, so `git diff > fix.patch` at the repo root followed by
+  `cd tools/backport && ./backport analyze fix.patch` works either way.
