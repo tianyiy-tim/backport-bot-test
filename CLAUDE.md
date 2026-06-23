@@ -50,6 +50,11 @@ python scripts/test_impact_analysis_v2.py
 # Rename-tracking edge cases
 python scripts/test_rename_tracking.py
 
+# False-negative safety of the local CLI's bucketing: asserts every truly-affected
+# branch the deterministic check cannot confirm lands in UNSURE (surfaced for
+# human/AI review), never silently in "not affected". No creds.
+python tools/backport/test_buckets.py
+
 # Agentic impact analysis prototype (mock backend by default, no creds needed)
 python scripts/test_agentic_impact.py
 
