@@ -191,8 +191,23 @@ def _changed_files_with_status(commit):
     return all_paths, introducer_paths
 
 
+def _branch_basenames(ref):
+    """Set of file basenames present anywhere on *ref*. Used as a conservative
+    anti-false-negative guard: a same-named file under a path our rename trace
+    missed means the code may still be on the branch."""
+    out = _git("ls-tree", "-r", "--name-only", ref, check=False).stdout
+    return {os.path.basename(p) for p in out.splitlines() if p.strip()}
+
+
 def bucket_branches(fix_sha, branches):
-    """Classify each branch deterministically (no AI). Returns dict branch->state."""
+    """Classify each branch deterministically (no AI). Returns dict branch->state.
+
+    Safety stance: a branch is only ever called NOT AFFECTED when we are
+    confident the changed code is absent. If ancestry/patch-id do not match but
+    the file is present (or a same-named file exists under a path we could not
+    trace), the branch is escalated to UNSURE rather than risk a silent false
+    negative. The only confident NOT AFFECTED is "the code is genuinely not here".
+    """
     files, introducer_files = _changed_files_with_status(fix_sha)
     introducers = bot.find_introducing_commit(fix_sha, introducer_files)
 
@@ -204,13 +219,21 @@ def bucket_branches(fix_sha, branches):
                 ALREADY if bot.is_already_patched(fix_sha, branch) else AFFECTED
             )
             continue
-        # Not matched by ancestry/patch-id: present-but-unprovable is UNSURE,
-        # absent-everywhere is a confident NOT AFFECTED.
+        # Not matched by ancestry/patch-id. Decide UNSURE vs a confident NOT
+        # AFFECTED, biasing hard toward UNSURE so a miss is never silent.
         ref = f"origin/{branch}"
         present = any(
             bot._get_file_on_branch(f, ref, commit=fix_sha)[0] is not None
             for f in files
         )
+        if not present:
+            # Conservative guard: if the rename-aware lookup found nothing but a
+            # file with the same name exists elsewhere on the branch, the code
+            # may be there under a path we could not trace. Escalate to UNSURE
+            # rather than declare a confident (and possibly false) NOT AFFECTED.
+            basenames = _branch_basenames(ref)
+            if any(os.path.basename(f) in basenames for f in files):
+                present = True
         buckets[branch] = UNSURE if present else NOT_AFFECTED
     return files, sorted(introducers), buckets
 
@@ -256,6 +279,11 @@ def _resolve_patch_and_base(args):
     return run["patch"], base, run
 
 
+def _is_empty_patch(patch_text):
+    """True if the patch has no diff content (blank file or only blank lines)."""
+    return not patch_text.strip()
+
+
 # --------------------------------------------------------------------------
 # rendering
 # --------------------------------------------------------------------------
@@ -295,6 +323,9 @@ def _print_summary(fix_sha, files, introducers, buckets):
 
 def cmd_analyze(args):
     patch_text = Path(args.patch).read_text()
+    if _is_empty_patch(patch_text):
+        print("patch is empty; nothing to analyze.")
+        return 0
     base = args.base or "origin/main"
     branches = args.branches or bot.get_supported_branches()
     if not branches:
@@ -329,6 +360,9 @@ def cmd_analyze(args):
 
 def cmd_explain(args):
     patch_text, base, run = _resolve_patch_and_base(args)
+    if _is_empty_patch(patch_text):
+        print("patch is empty; nothing to explain.")
+        return 0
     with materialized_fix(patch_text, base, three_way=args.three_way) as fix_sha:
         files, introducer_files = _changed_files_with_status(fix_sha)
         introducers = bot.find_introducing_commit(fix_sha, introducer_files)
@@ -407,6 +441,9 @@ def _cherry_pick_local(fix_sha, branch, run_id):
 
 def cmd_apply(args):
     patch_text, base, run = _resolve_patch_and_base(args)
+    if _is_empty_patch(patch_text):
+        print("patch is empty; nothing to apply.")
+        return 0
     with materialized_fix(patch_text, base, three_way=args.three_way) as fix_sha:
         branches = run["branches"] if run else bot.get_supported_branches()
         buckets = run["buckets"] if run else bucket_branches(fix_sha, branches)[2]
