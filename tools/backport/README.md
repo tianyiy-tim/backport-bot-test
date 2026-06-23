@@ -24,37 +24,39 @@ stay fully local (those branches are then flagged AFFECTED for review).
 ```
 get internal security issue
         -> patch the fix on mainline locally        (git diff > fix.patch)
-        -> ./backport analyze fix.patch             (affected / not affected for every branch)
-        -> ./backport explain                       (optional: see the AI reasoning)
+        -> ./backport analyze fix.patch --explain   (affected / not affected, with the reason for each)
         -> review and decide
         -> ./backport apply --all-affected          (local backport/<branch>/<id> branches)
         -> push + open PRs for human review          (only when ready / post-embargo)
 ```
+
+Before it analyzes, `analyze` confirms your test file: AWS-LC fixes usually ship
+a `*_test.cc` next to the change in the same diff. If one is in the patch it asks
+you to confirm it; if none is, it asks whether to proceed without one. Answering
+N stops until you re-run. Pass `--yes` to skip the prompt.
 
 ## Commands
 
 ```sh
 # 1. Verdict for every supported branch: affected or not affected. The
 #    deterministic check decides what it can; the AI is consulted automatically
-#    on the branches it cannot confirm.
+#    on the branches it cannot confirm. Add --explain for the reason behind each.
 ./backport analyze fix.patch
+./backport analyze fix.patch --explain                          # show why each verdict
 ./backport analyze fix.patch --no-ai                            # deterministic only
 ./backport analyze fix.patch --branches AWS-LC-FIPS-4.0 NetOS    # limit scope
 ./backport analyze fix.patch --json                             # machine-readable
 
-# 2. See the AI's full reasoning for the branches the deterministic check could
-#    not confirm (or force a specific branch).
-./backport explain
-./backport explain AWS-LC-FIPS-3.0
-
-# 3. Cherry-pick the patch onto local branches. Reports clean vs conflict.
+# 2. Cherry-pick the patch onto local branches. Reports clean vs conflict.
 #    Never pushes / opens a PR / auto-merges.
 ./backport apply --all-affected
 ./backport apply --branches AWS-LC-FIPS-3.0 AWS-LC-FIPS-4.0 --yes
 ```
 
-`analyze` saves the run, so `explain` and `apply` reuse the same patch and base
-without re-passing them. Override with `--patch <file>` / `--base <ref>` anytime.
+`analyze` saves the run, so `apply` reuses the same patch and base without
+re-passing them (the resolved verdicts, including which branches are affected,
+live in `tools/backport/.runs/last-run.json`). Override with `--patch <file>` /
+`--base <ref>` anytime.
 
 ## How a verdict is reached
 

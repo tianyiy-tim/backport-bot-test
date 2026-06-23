@@ -43,7 +43,7 @@ Two further checks on AI behaviour:
 - **Stability.** The same inconclusive case (`cve-cross-era` / `FIPS-2020`) was run three times. All three returned the same verdict (likely affected, medium confidence), so the non-determinism of the model did not change the answer on this case.
 - **Specificity.** Forced on `cve-handshake-original` / `FIPS-2025`, where the fix had already been cherry-picked, the AI returned likely not affected with high confidence and correctly explained that the guard was already present. This shows it is not simply flagging everything.
 
-The CLI's `explain` command was also exercised end to end against Bedrock on a real UNSURE branch (`FIPS-2020`); it returned likely affected with a sound rationale (the file is present and even less guarded than mainline) and a recommendation to port the fix by hand because a clean cherry-pick was not possible.
+The CLI's `analyze --explain` path was also exercised end to end against Bedrock on a real inconclusive branch (`FIPS-2020`); it returned likely affected with a sound rationale (the file is present and even less guarded than mainline) and a recommendation to port the fix by hand because a clean cherry-pick was not possible.
 
 ## 5. Edge cases
 

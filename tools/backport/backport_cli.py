@@ -14,12 +14,11 @@ Subcommands:
                       confirm, the AI advisory is consulted automatically to
                       decide. If the AI is uncertain or unavailable, the branch
                       is flagged AFFECTED for review, never silently dropped.
-                      Use --no-ai for a deterministic-only run (inconclusive
-                      branches are flagged AFFECTED). Saves the run.
-
-  explain [branch..]  Print the AI's full reasoning for the branches the
-                      deterministic check could not confirm (or the ones you
-                      name). Use this to see *why* analyze decided as it did.
+                      Flags: --explain (print the reason behind each affected
+                      branch), --no-ai (deterministic only, inconclusive ->
+                      flagged AFFECTED), --yes (skip the test-file prompt). Saves
+                      the run. Before analyzing it confirms the patch's test file
+                      (AWS-LC fixes ship a *_test.cc next to the change).
 
   apply [--all-affected | --branches ..]
                       Cherry-pick the patch onto the chosen branches in LOCAL
@@ -29,9 +28,8 @@ Subcommands:
 Typical flow:
 
   git diff > fix.patch                 # the mainline fix, uncommitted is fine
-  ./backport analyze fix.patch         # affected / not affected for every branch
-  ./backport explain                   # optional: see the AI reasoning
-  ./backport apply --all-affected      # local backport branches for review
+  ./backport analyze fix.patch --explain   # verdict + reason for every branch
+  ./backport apply --all-affected          # local backport branches for review
 
 Run from anywhere inside the AWS-LC clone. The clone must have the release
 branches fetched (origin/AWS-LC-FIPS-*, origin/NetOS, origin/main).
@@ -40,6 +38,7 @@ branches fetched (origin/AWS-LC-FIPS-*, origin/NetOS, origin/main).
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -288,6 +287,64 @@ def _is_empty_patch(patch_text):
     return not patch_text.strip()
 
 
+_TEST_SUFFIXES = ("_test.cc", "_test.cpp", "_test.c", "_test.cxx")
+
+
+def _patch_paths(patch_text):
+    """File paths touched by the patch, parsed from the diff headers."""
+    paths = set()
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git ") and " b/" in line:
+            paths.add(line.split(" b/", 1)[1].strip())
+        elif line.startswith("+++ b/"):
+            p = line[len("+++ b/") :].strip()
+            if p and p != "/dev/null":
+                paths.add(p)
+    return paths
+
+
+def _ask_yn(prompt):
+    """Prompt until the user answers Y or N. Returns True for Y."""
+    while True:
+        ans = input(f"{prompt} [Y/N] ").strip().lower()
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+        print("Please answer Y or N.")
+
+
+def _confirm_test_file(patch_text, skip):
+    """Confirm the patch's test file before analysis. Returns True to proceed.
+
+    AWS-LC tests usually live next to the fix as a `*_test.cc` file in the same
+    diff. If one is present, confirm it is the right test; if none is present,
+    confirm the user wants to proceed without one. Answering N aborts.
+    """
+    if skip or not sys.stdin.isatty():
+        return True
+    tests = sorted(p for p in _patch_paths(patch_text) if p.endswith(_TEST_SUFFIXES))
+    if tests:
+        print(f"Test file found in the patch: {', '.join(tests)}")
+        return _ask_yn("Is this the test file for your patch?")
+    print("No test file (e.g. *_test.cc) found in the patch.")
+    return _ask_yn("Proceed without a test file?")
+
+
+def _short(text, n=240):
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "\u2026"
+
+
+def _clean_reasoning(text, n=240):
+    """Pull the prose out of the model's structured reasoning block and trim it."""
+    m = re.search(r"[Rr]easoning\**:?\s*(.+)", text, re.S)
+    body = m.group(1) if m else text
+    # drop a trailing 'Recommendation' section if present
+    body = re.split(r"[Rr]ecommendation\**:?", body, maxsplit=1)[0]
+    return _short(body, n)
+
+
 def resolve_unsure(fix_sha, files, introducers, buckets, use_ai=True):
     """Turn every UNSURE branch into a definite AFFECTED / NOT_AFFECTED verdict.
 
@@ -299,9 +356,11 @@ def resolve_unsure(fix_sha, files, introducers, buckets, use_ai=True):
     branch resolves to AFFECTED (flagged for review), never NOT_AFFECTED. So the
     automatic resolution can only over-flag, never create a silent miss.
 
-    Returns (buckets, decided_by) where decided_by[branch] explains the verdict.
+    Returns (buckets, decided_by, summaries). decided_by[branch] is a one-line
+    basis; summaries[branch] is the AI's reasoning for branches it judged.
     """
     decided_by = {b: "deterministic" for b in buckets}
+    summaries = {}
     unsure = [b for b, s in buckets.items() if s == UNSURE]
     for branch in unsure:
         adv = (
@@ -319,15 +378,18 @@ def resolve_unsure(fix_sha, files, introducers, buckets, use_ai=True):
         elif adv.get("likely_affected") is True:
             buckets[branch] = AFFECTED
             decided_by[branch] = f"AI: likely affected ({adv.get('confidence')})"
+            summaries[branch] = adv.get("reasoning", "").strip()
         elif adv.get("likely_affected") is False:
             buckets[branch] = NOT_AFFECTED
             decided_by[branch] = f"AI: likely not affected ({adv.get('confidence')})"
+            summaries[branch] = adv.get("reasoning", "").strip()
         else:
             buckets[branch] = AFFECTED
             decided_by[branch] = (
                 f"AI: uncertain ({adv.get('confidence')}) -> flagged for review"
             )
-    return buckets, decided_by
+            summaries[branch] = adv.get("reasoning", "").strip()
+    return buckets, decided_by, summaries
 
 
 # --------------------------------------------------------------------------
@@ -356,6 +418,27 @@ def _print_summary(fix_sha, files, introducers, buckets, decided_by):
         print(f"Already patched (skip): {', '.join(pat)}")
 
 
+def _print_explanations(buckets, decided_by, summaries):
+    """Short why-behind-the-decision for each affected branch (and any branch the
+    AI judged not affected, since that is an AI 'skip' worth seeing)."""
+    print()
+    print("Decision summary:")
+    for branch, state in buckets.items():
+        if state == AFFECTED:
+            if decided_by.get(branch) == "deterministic":
+                print(
+                    f"  {branch}: affected, deterministically found (introducer in branch history)"
+                )
+            else:
+                print(
+                    f"  {branch}: affected, {_clean_reasoning(summaries.get(branch) or decided_by.get(branch, ''))}"
+                )
+        elif state == ALREADY:
+            print(f"  {branch}: already patched (equivalent fix already on the branch)")
+        elif state == NOT_AFFECTED and branch in summaries:
+            print(f"  {branch}: not affected, {_clean_reasoning(summaries[branch])}")
+
+
 # --------------------------------------------------------------------------
 # subcommands
 # --------------------------------------------------------------------------
@@ -366,6 +449,13 @@ def cmd_analyze(args):
     if _is_empty_patch(patch_text):
         print("patch is empty; nothing to analyze.")
         return 0
+
+    # Confirm the test file before doing anything (AWS-LC fixes ship a *_test.cc
+    # next to the change). Answering N aborts until the user re-runs.
+    if not _confirm_test_file(patch_text, skip=args.yes):
+        print("Aborted. Re-run when your patch is ready.")
+        return 0
+
     base = args.base or "origin/main"
     branches = args.branches or bot.get_supported_branches()
     if not branches:
@@ -386,7 +476,7 @@ def cmd_analyze(args):
                 f"consulting AI to decide...\n",
                 file=sys.stderr,
             )
-        buckets, decided_by = resolve_unsure(
+        buckets, decided_by, summaries = resolve_unsure(
             fix_sha, files, introducers, buckets, use_ai=use_ai
         )
         if args.json:
@@ -399,62 +489,17 @@ def cmd_analyze(args):
                         "introducers": introducers,
                         "buckets": buckets,
                         "decided_by": decided_by,
+                        "summaries": summaries,
                     },
                     indent=2,
                 )
             )
         else:
             _print_summary(fix_sha, files, introducers, buckets, decided_by)
+            if args.explain:
+                _print_explanations(buckets, decided_by, summaries)
 
     _save_run(patch_text, base, branches, buckets)
-    return 0
-
-
-def cmd_explain(args):
-    patch_text, base, run = _resolve_patch_and_base(args)
-    if _is_empty_patch(patch_text):
-        print("patch is empty; nothing to explain.")
-        return 0
-    with materialized_fix(patch_text, base, three_way=args.three_way) as fix_sha:
-        branches = args.branches or (
-            run["branches"] if run else bot.get_supported_branches()
-        )
-        # Recompute the deterministic buckets so we know which branches were
-        # inconclusive (the saved run stores resolved verdicts, not UNSURE).
-        files, introducers, det_buckets = bucket_branches(fix_sha, branches)
-
-        targets = args.branches or [b for b, s in det_buckets.items() if s == UNSURE]
-        if not targets:
-            print(
-                "Nothing to explain: no inconclusive branches. (Pass branch names to force.)"
-            )
-            return 0
-
-        client_probe = bot._ai_client()
-        if client_probe is None:
-            print(
-                "AI advisory unavailable: no Bedrock client (missing SDK or AWS "
-                "credentials). Deterministic buckets stand; rerun with creds to "
-                "get justifications.",
-                file=sys.stderr,
-            )
-            return 1
-
-        print(f"AI advisory for {len(targets)} branch(es). Advisory only.\n")
-        for branch in targets:
-            adv = bot.ai_impact_analysis(fix_sha, branch, files, introducers)
-            print(f"== {branch} ==")
-            if adv is None:
-                print("  (no response from the model; see stderr)\n")
-                continue
-            verdict = {
-                True: "likely affected",
-                False: "likely NOT affected",
-                None: "uncertain",
-            }[adv.get("likely_affected")]
-            print(f"  verdict:    {verdict}")
-            print(f"  confidence: {adv.get('confidence')}")
-            print(f"  reasoning:  {adv.get('reasoning', '').strip()}\n")
     return 0
 
 
@@ -576,27 +621,29 @@ def main(argv=None):
         )
 
     pa = sub.add_parser(
-        "analyze", help="bucket branches as affected/unsure/not affected"
+        "analyze", help="give an affected / not affected verdict for every branch"
     )
     pa.add_argument("patch", help="path to the fix patch (git diff or format-patch)")
     pa.add_argument("--branches", nargs="+", help="limit to these branches")
+    pa.add_argument(
+        "--explain",
+        action="store_true",
+        help="print a short summary of the decision behind each affected branch",
+    )
     pa.add_argument(
         "--no-ai",
         action="store_true",
         help="deterministic only; do not consult the AI on inconclusive branches "
         "(they are flagged AFFECTED for review instead)",
     )
+    pa.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the test-file confirmation prompt",
+    )
     pa.add_argument("--json", action="store_true", help="emit JSON")
     add_common(pa)
     pa.set_defaults(func=cmd_analyze)
-
-    pe = sub.add_parser("explain", help="AI justification for the unsure branches")
-    pe.add_argument(
-        "branches", nargs="*", help="branches to explain (default: all UNSURE)"
-    )
-    pe.add_argument("--patch", help="patch file (default: the last analyzed run)")
-    add_common(pe)
-    pe.set_defaults(func=cmd_explain)
 
     pp = sub.add_parser("apply", help="cherry-pick the patch onto local branches")
     pp.add_argument("--branches", nargs="+", help="branches to apply to")
