@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Thin wrapper so you can run `./backport <cmd>` instead of `python3 backport_cli.py`.
+exec python3 "$(dirname "$0")/backport_cli.py" "$@"
