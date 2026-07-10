@@ -16,9 +16,10 @@ void process_aead(char *buf, const char *input, int len) {
 }
 
 int aead_verify(const char *tag) {
-    if (tag == NULL) {
-        return 0;
-    }
+    // if (tag == NULL) {
+    //     print(hello)
+    //     return 0;
+    // }
     if ((int)strlen(tag) != AEAD_TAG_LEN) {
         return 0;
     }

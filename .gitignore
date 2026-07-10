@@ -1,2 +1,13 @@
-# Transient patch inputs generated for the backport CLI (git diff > fix.patch, etc.)
+# Transient patch inputs generated for the backport CLI (git diff > fix.patch)
 *.patch
+
+# Backport CLI run-state written into a target checkout
+.backport-runs/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local analysis/output dumps (never checked in)
+*_results.txt
+*_run.txt

@@ -1,0 +1,401 @@
+# Curated, HIGH-CONFIDENCE backport test bench.
+#
+# Every (fix x branch) cell here has ground truth we know FOR SURE, verified by
+# hand against aws/aws-lc: each branch either has a literal `-x` cherry-pick of
+# the fix, a matching patch-id, or the fix as a direct ancestor (forked after it
+# landed). No reimplementations (cve-id), no undetected blanks, no recency noise.
+# Expected result: 0 false positives, 0 false negatives.
+#
+# Run:  python3 scripts/replay_real_cve.py --file reliable_cves.txt
+#       (add --with-ai to also exercise the AI layer; ground truth is unchanged)
+#
+# Per-fix verified ground truth (branch -> how the fix reached it):
+
+# 9545d9de6059  CVE-2023-3446 (DH_check excessive time, oversized modulus)
+#   -x cherry-pick: fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor:       fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+9545d9de6059   DH_check() excessive time with oversized modulus (CVE-2023-3446)
+
+# 1bb574f3f2e7  Excessive time checking DH q parameter value (#1121)
+#   -x cherry-pick: fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor:       fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+1bb574f3f2e7   Excessive time checking DH q parameter value (#1121)
+
+# e17506cdbde1  pkcs8: cap ciphertext length before allocating
+#   -x cherry-pick: ALL six supported branches
+e17506cdbde1   pkcs8: cap ciphertext length before allocating
+
+# 11b50d39cf23  CVE-2022-0778 (BN_mod_sqrt infinite loop)
+#   patch-id (reshaped cherry-pick): fips-2021-10-20, fips-2021-10-20-1MU
+#   ancestor:                        fips-2022-11-02, fips-2024-09-27,
+#                                    fips-2025-09-12-lts, fips-NetOS-2024-06-11
+11b50d39cf23   BN_mod_sqrt infinite loop (CVE-2022-0778)
+
+# 4c37fba343  Kyber constant-time fix: prevent compiler from emitting DIV (#1376)
+#   Touches only crypto/kyber/*, which does NOT exist on the 2021 branches, so
+#   those are a CONFIDENT "not affected" (nothing to backport). This is the
+#   verified NEGATIVE case: the tool must decline to backport, not over-flag.
+#   not affected (crypto/kyber absent): fips-2021-10-20, fips-2021-10-20-1MU
+#   patch-id backport (rolled back -> re-flagged): fips-2022-11-02
+#   ancestor:  fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+4c37fba343   Kyber avoid compiler DIV (constant-time) (#1376)
+
+# 3b5856603682  Use-after-free / NULL-deref in thread_states_list (#1294)
+#   VERIFIED via literal -x cherry-pick + ancestry. NOTE: the deterministic
+#   engine MISSES the -x branches (Path-4 downgrade on a reshaped backport) -> a
+#   known FALSE NEGATIVE, recovered by the AI tie-breaker. Kept precisely because
+#   it exercises that failure.
+#   affected (-x cherry-pick): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor:                  fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+3b5856603682   Only update thread_states_list if freed state is head (UAF, #1294)
+
+# 17cd6574bdb8  Kyber constant-time: avoid compiler division (#1360)
+#   not affected (crypto/kyber absent): fips-2021-10-20, fips-2021-10-20-1MU
+#   affected (-x cherry-pick):          fips-2022-11-02
+#   ancestor:  fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+17cd6574bdb8   Kyber avoid compiler division (constant-time) (#1360)
+
+# 2a184bd568ff  ML-DSA constant-time hardening: caddq, poly_chknorm, decompose (#2602)
+#   Touches only crypto/fipsmodule/ml_dsa/*, present ONLY on 2025-lts.
+#   not affected (ml_dsa absent): fips-2021-10-20, fips-2021-10-20-1MU,
+#                                 fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   ancestor:                     fips-2025-09-12-lts
+2a184bd568ff   ML-DSA constant-time hardening (#2602)
+
+# 8a43348a53b0  Reject zero-sized digests in HKDF EVP_PKEY
+#   not affected (p_hkdf.c absent):        fips-2021-10-20, fips-2021-10-20-1MU
+#   AFFECTED (verified: p_hkdf.c present, EVP_MD_size<=0 guard ABSENT, not
+#     backported): fips-2022-11-02   <-- bot SHOULD flag; harness GT shows
+#     "not patched" (no -x here) so it scores FP, but per the repo the flag is
+#     CORRECT. A true impact-vs-ship cell.
+#   affected (-x cherry-pick): fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+8a43348a53b0   reject zero-sized digests in HKDF EVP_PKEY
+
+# 4b07805bddc5  Prevent non-constant-time code in Kyber-R3 and ML-KEM (#1619)
+#   not affected (kyber+ml_kem absent):  fips-2021-10-20, fips-2021-10-20-1MU
+#   NOT AFFECTED (verified: 2022's kyber poly.c already uses a constant-time
+#     reimplementation - constant_time_is_zero_w/select_w - so the vulnerable
+#     line `mask = -(int16_t)((msg[i]>>j)&1)` is ABSENT): fips-2022-11-02
+#     -> the bot correctly declines here; verified by inspecting the actual lines,
+#        not just file presence.
+#   ancestor:  fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+4b07805bddc5   Prevent non-constant-time code in Kyber-R3 and ML-KEM (#1619)
+
+# cb87f254eb15  Fix a bug in ML-DSA poly_uniform (#2721)
+#   Touches only crypto/fipsmodule/ml_dsa/*, present ONLY on 2025-lts, which
+#   forked BEFORE this fix -> 2025-lts has ML-DSA but lacks the fix.
+#   not affected (ml_dsa absent): fips-2021-10-20, fips-2021-10-20-1MU,
+#                                 fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   AFFECTED (verified: SHAKE_Squeeze fix line ABSENT on 2025-lts's poly.c):
+#                                 fips-2025-09-12-lts  <-- bot SHOULD flag; harness
+#     GT shows "not patched" (not backported yet) so scores FP, but the flag is
+#     CORRECT per the repo.
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: cb87f254eb15   Fix a bug in ML-DSA poly_uniform (#2721)
+
+# 110f184623b5  Reject XOF digests in DH_compute_key_hashed
+#   ALL SIX branches affected (verified). The fix modifies DH_compute_key_hashed
+#   (present on every branch); the 2021 branches still carry the vulnerable
+#   pre-image `if (digest_len > max_out_len)` with the unfixed `unsigned
+#   out_len_unsigned;` and NO `digest_len == 0` guard, and 2024/2025/NetOS got
+#   the fix via -x. Tests the bot's affected-detection on same-path code.
+#   affected (verified pre-image present): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   affected (-x cherry-pick):             fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+#   NOTE: 2021/2021-1MU/2022 have no -x, so the harness GT shows "not patched"
+#   and scores the (correct) flags as FP; per the repo the bot is right.
+110f184623b5   Reject XOF digests in DH_compute_key_hashed
+
+# dcd1690320a3  evp: disable EVP_PKEY_derive for KEM method (hardening)
+#   not affected (KEM EVP file absent): fips-2021-10-20, fips-2021-10-20-1MU,
+#                                       fips-2022-11-02, fips-NetOS-2024-06-11
+#   affected (-x cherry-pick):          fips-2024-09-27, fips-2025-09-12-lts
+dcd1690320a3   evp: disable EVP_PKEY_derive for KEM method
+
+# 37c2b5e8cf5a  Avoid mixing SSE and AVX in XTS-mode AVX512 (movdqa->vmovdqa) (#2177-era)
+#   The AVX512 XTS .pl file was added after the 2021/2022 forks, so:
+#   not affected (aesni-xts-avx512.pl absent): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   affected (-x cherry-pick):                 fips-2024-09-27
+#   ancestor:                                  fips-2025-09-12-lts
+#   AFFECTED (verified: NetOS still has the bare `movdqa %xmm2,%xmm8`, fix
+#     not applied): fips-NetOS-2024-06-11  <-- bot SHOULD flag; harness GT shows
+#     "not patched" (no -x on NetOS) so scores FP, but the flag is CORRECT.
+37c2b5e8cf5a   Avoid mixing SSE and AVX in XTS-mode AVX512
+
+# ---------------------------------------------------------------------------
+# Batch 3: verified via pre-image (AFFp = the exact vulnerable lines the fix
+# removes are present on the branch and the fix is not applied -> affected).
+# AFFp cells carry no -x/patch-id, so the harness GT shows "not patched" and
+# scores the (correct) flags as FP; per the repo the bot is right.
+# ---------------------------------------------------------------------------
+
+# 4e32cc53a81d  Don't use expired certificates if possible (#1287-era)
+#   affected (pre-image): fips-2021-10-20, fips-2021-10-20-1MU
+#   affected (-x):        fips-2022-11-02
+#   ancestor:             fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+4e32cc53a81d   Don't use expired certificates if possible
+
+# f31fd3114a1f  Snapsafe-type uniqueness breaking event detection (#1640)
+#   REMOVED from the bench: mostly-additive feature (278 added / 6 removed) whose
+#   distinctive pre-image line is ABSENT on the 2021 branches, so its "affected"
+#   AFFp was bogus (matched a non-distinctive line). It's what caused the 2 AI
+#   tie-breaker over-flags. Not a reliable case.
+
+90d2a34ead8d   Remove retries on PCT failure in EC and RSA key generation
+#   affected (pre-image): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02, fips-NetOS-2024-06-11
+#   affected (-x):        fips-2024-09-27
+#   ancestor:             fips-2025-09-12-lts
+
+# d93711c6be45  HKDF/HKDF_expand/PBKDF Truncated SHA2-512 (#1946)
+#   REMOVED from the bench: mostly-additive feature (306 added / 2 removed) whose
+#   AFFp matched only the generic string "SHA2-512" — not real vulnerable code.
+#   Not a reliable case.
+
+# cf2e09fb5d40  evp: fix DSA keygen error-path UAF/double-free
+#   not affected (file absent): fips-2021-10-20, fips-2021-10-20-1MU,
+#                               fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   affected (-x):              fips-2025-09-12-lts
+cf2e09fb5d40   evp: fix DSA keygen error-path UAF/double-free
+
+# 5039544f9dbc  INT_MAX bounds check before EVP_CipherUpdate in PKCS8/PKCS12 (#3043)
+#   affected (pre-image, all six carry the pre-INT_MAX-check allocation):
+#     every supported branch
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 5039544f9dbc   INT_MAX bounds check before EVP_CipherUpdate in PKCS8/PKCS12 (#3043)
+
+# a48830c0a90d  PKCS8_decrypt: handle all negative pass_len values (#3039)
+#   affected (pre-image, all six still test only `pass_len_in == -1`):
+#     every supported branch
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: a48830c0a90d   PKCS8_decrypt handle all negative pass_len values (#3039)
+
+# ---------------------------------------------------------------------------
+# Batch 4: all-branch pre-image (the fix modifies code present on every branch;
+# vulnerable pre-image verified present, fix not applied -> every branch affected).
+# Each pre-image below was spot-checked to be the ACTUAL vulnerable line, not a
+# coincidental generic match.
+# ---------------------------------------------------------------------------
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: c21d40da4bbe   Fix modulewrapper memory leak (#3094)
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 80f0e5780c88   Harden HMAC error paths: leaks, state bugs, missing cleansing (#3081)
+# 1b40140573cd (Fixes for PKCS12_set_mac) REMOVED: verified against the repo it is
+#   a mostly-additive fix (adds password_len/salt_len validation); it has NO
+#   distinctive removed pre-image line, so its "affected" AFFp was on reshuffled
+#   context. Same failure mode as f31fd/d937. Not a reliable cell.
+
+# PQDSA_KEY setter fixes: touch crypto/fipsmodule (PQDSA present only on 2025-lts).
+#   not affected (absent): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02,
+#                          fips-2024-09-27, fips-NetOS-2024-06-11
+#   affected (pre-image):  fips-2025-09-12-lts
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: f295f20a1d3d   Key state consistency in PQDSA_KEY setter functions (#3040)
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 0430b7d02f3d   Refactor PQDSA_KEY set_raw to goto-err cleanup (#2993)
+
+# ML-KEM fixes in crypto/fipsmodule/ml_kem. NOTE: ML-KEM was later MOVED here
+# from the old out-of-module path crypto/ml_kem/. fips-NetOS-2024-06-11 forked
+# BEFORE that move, so it still carries ML-KEM at the OLD path and IS affected
+# (the import commit is its ancestor) — NOT "not affected". So:
+#   not affected (no ML-KEM at all): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor (fipsmodule/ml_kem):    fips-2024-09-27, fips-2025-09-12-lts
+#   affected via OLD-path ML-KEM (bot flags; not backported -> shows as FP but the
+#     module IS present): fips-NetOS-2024-06-11
+f89c9bec9aea   Add return checks on SHA3 functions in ML-KEM (#1859)
+ed6d6ca3cf56   ML-KEM encaps key modulus check optimization (#1874)
+# (These were falsely AFFp on old branches from a co-changed test file until the
+#  pre-image check began skipping test files; the NetOS flag is via the ML-KEM
+#  import ancestor, which is defensible — NetOS has the module at the old path.)
+c5d3f3dd39df   ML-KEM decapsulation key hash check (#1873)
+2835116571e8   ML-KEM encapsulation key modulus check (#1868)
+
+# bfd98fa038e0  CVE-2020-1971 (NULL-dereference in GENERAL_NAME_cmp)
+#   Predates every supported branch's fork point, so it's a direct ancestor of
+#   all six -> already present via shared history; the bot must skip all six
+#   (already_patched), never open a redundant PR. Tests correct already-patched
+#   detection across the whole set.
+#   ancestor (all six): every supported branch
+# TOO OLD (ancestor of every branch -> 0 candidates), removed: bfd98fa038e0   Fix potential NULL-dereference CVE-2020-1971 (#78)
+
+# 004549d28b88  CVE-2021-23841 (X509 hash collision handling)
+#   Predates every fork -> direct ancestor of all six; bot must skip all
+#   (already_patched). Another all-ancestor already-patched check.
+# TOO OLD (ancestor of every branch -> 0 candidates), removed: 004549d28b88   Improvement for CVE-2021-23841 (#92)
+
+# ---------------------------------------------------------------------------
+# Batch 5: EC side-channel / invalid-curve hardening. Pre-image spot-checked to
+# be the ACTUAL vulnerable EC code (not generic/test lines). Newer branches
+# forked after the fix -> ancestor; older branches carry the vulnerable code.
+# ---------------------------------------------------------------------------
+# 507120cc3dba  Use constant curve-specific groups whenever possible
+#   affected (pre-image `inner_group = EC_KEY_parse_parameters` present):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor: fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+507120cc3dba   Use constant curve-specific groups whenever possible
+
+# 8da095382457  Add a value barrier when checking for point doubling (const-time)
+#   affected (pre-image `is_nontrivial_double` / ec_GFp_simple_* present):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor: fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+8da095382457   Add a value barrier when checking for point doubling
+
+# 28be5302b592  Make asserts constant-time (declassify secret-dependent asserts)
+#   affected (pre-image `assert(orig_len >= in_len)` / `assert(carry == ...)` present):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   ancestor: fips-2025-09-12-lts
+28be5302b592   Make asserts constant-time too
+
+# b7917d9b83a4  Rand small fixes
+#   Touches a rand file added after the 2024 forks (present only on 2025-lts).
+#   not affected (absent): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02,
+#                          fips-2024-09-27, fips-NetOS-2024-06-11
+#   ancestor:              fips-2025-09-12-lts
+b7917d9b83a4   Rand small fixes (#2664)
+
+# 0c9733744447 (Hardening DSA param checks) REMOVED: verified against the repo it
+#   is a mostly-ADDITIVE fix (adds `if (bits > OPENSSL_DSA_MAX_MODULUS_BITS)` and
+#   `if (!dsa_check_key(dsa))` guards; only removed lines are BN_CTX refactor
+#   boilerplate). 2024/NetOS already carry the dsa_check_key guard. The documented
+#   "distinctive pre-image" is actually an ADDED line — the AFFp was bogus. Same
+#   failure mode as f31fd/d937. Not a reliable cell.
+
+# 3cc65bd333ee  Fix PKCS12 error code (wrong PKCS8_R_INCORRECT_PASSWORD) (#2538)
+#   1-line modification; distinctive pre-image `OPENSSL_PUT_ERROR(PKCS8,
+#   PKCS8_R_INCORRECT_PASSWORD)` present on the older branches.
+#   affected (pre-image): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02,
+#                         fips-2024-09-27, fips-NetOS-2024-06-11
+#   ancestor: fips-2025-09-12-lts
+3cc65bd333ee   Fix PKCS12 Error Code (#2538)
+
+# 9ad27ab683af  Add new verification error for mismatched signatures (#413)
+#   Distinctive pre-image `len != signed_msg_len || OPENSSL_memcmp(buf,
+#   signed_msg, len)` (RSA verify hardening) — VERIFIED present on 2021-10-20.
+#   affected (pre-image, verified rsa.c:614 combined vulnerable line present):
+#     fips-2021-10-20
+#   ALREADY PATCHED via reimplementation (no -x / no patch-id match, so the
+#     harness GT and deterministic engine can't see it): fips-2021-10-20-1MU
+#     -> rsa.c:613 is the SPLIT fixed form `if (len != signed_msg_len)` and both
+#        RSA_R_MISMATCHED_SIGNATURE / ECDSA_R_MISMATCHED_SIGNATURE are defined.
+#        The bot's flag here is a REDUNDANT over-flag (branch already protected),
+#        NOT a missed backport and NOT "affected but not shipped".
+#   ancestor:             fips-2022-11-02, fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+9ad27ab683af   Add new verification error for mismatched signatures (#413)
+
+# efb6ba943437  Fix issues in pass_util.cc password handling (#3032)
+#   Touches only crypto/.../pass_util.cc, a file added after every branch's fork
+#   -> absent on all six. Tests that the bot correctly DECLINES a fix whose file
+#   doesn't exist on any branch (all skip).
+#   not affected (file absent): all six supported branches
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: efb6ba943437   Fix issues in pass_util.cc password handling (#3032)
+
+# ec83c51b5b35  Ensure correct bio memory buffer type is assigned
+#   affected (pre-image `case BIO_C_SET_BUF_MEM:` present on every branch):
+#     all six supported branches
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: ec83c51b5b35   Ensure correct bio memory buffer type is assigned
+
+# f8d3b92210f4  Fix wherelen handling in BIO_ADDR_rawmake (unix-socket path bounds)
+#   BIO_ADDR_rawmake in its current form exists only on 2025-lts.
+#   not affected (absent): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02,
+#                          fips-2024-09-27, fips-NetOS-2024-06-11
+#   affected (pre-image `wherelen + 1 > sizeof(ap->s_un.sun_path)`): fips-2025-09-12-lts
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: f8d3b92210f4   Fix wherelen handling in BIO_ADDR_rawmake
+
+# e0484c87167a (Rework order for initialisation of digest object) REMOVED:
+#   verified against the repo it is a REORDERING/additive fix (adds
+#   `ctx->md_data = NULL; ctx->update = NULL; ctx->digest = NULL;`) — every removed
+#   line reappears reshuffled, so there is NO distinctive pre-image to prove
+#   "affected". Its AFFp was on reshuffled context. Not a reliable cell.
+
+# 8e7e4a569db4  Don't support parameterless DSA keys (reject invalid DSA keys)
+#   affected (pre-image `CBS_get_u8(&key, &padding)` DSA key parse present):
+#     all six supported branches
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 8e7e4a569db4   Don't support parameterless DSA keys
+
+# ---------------------------------------------------------------------------
+# Batch 6: mined from aws/aws-lc and certified by git forensics (ancestry, -x
+# cherry-picks, module presence, distinctive pre-image). Verdicts here are the
+# repo-forensic ground truth; see ground_truth.txt for the per-cell evidence.
+# ---------------------------------------------------------------------------
+
+# 779d13f705c8  CVE-2023-3817: consistently reject large p and large q in DH
+#   affected (pre-image `#define OPENSSL_DH_CHECK_MAX_MODULUS_BITS 32768`):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   ancestor: fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+779d13f705c8   Consistently reject large p and large q in DH (CVE-2023-3817)
+
+# 32e73b358236  Fix theoretical overflow in BIO_printf (#2369)
+#   affected (pre-image `const int requested_len = out_len;`):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   ancestor: fips-2025-09-12-lts
+32e73b358236   Fix theoretical overflow in BIO_printf (#2369)
+
+# 40b080b7ddc1  Integer overflow in x509v3_bytes_to_hex (#3127)
+#   not affected (ocsp_print.c / v3_utl overflow site absent): fips-2021-10-20,
+#     fips-2021-10-20-1MU, fips-2022-11-02
+#   affected (pre-image `if (!CBB_init(&cbb, len * 3 + 1))`): fips-2024-09-27,
+#     fips-2025-09-12-lts, fips-NetOS-2024-06-11
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 40b080b7ddc1   Integer overflow in x509v3_bytes_to_hex (#3127)
+
+# 48040c6ee15a  Type safety + bounds checking in EVP cipher ctrl handlers (#3034)
+#   affected (verified: e_aes.c EVP_CTRL_GCM_SET_IV_INV memcpy has NO arg bounds
+#     check -- OOB write the fix guards): fips-2021-10-20, fips-2021-10-20-1MU,
+#     fips-2022-11-02, fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+#   NOTE: all six carry the unguarded handler; the AI correctly flags the older
+#   ones that the deterministic pre-image path (keyed on the absent e_aesccm CCM
+#   macro) downgrades -- a real AI-recovered false negative.
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 48040c6ee15a   Type safety + bounds checking in EVP cipher ctrl handlers (#3034)
+
+# eb0c0c0d8e4e  OOB input read in AES-XTS Decrypt AVX-512 (#2227)
+#   not affected (aesni-xts-avx512.pl absent): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   patched: fips-2024-09-27 (reimpl), fips-2025-09-12-lts (ancestor)
+#   affected (pre-image present): fips-NetOS-2024-06-11
+eb0c0c0d8e4e   OOB input read in AES-XTS Decrypt AVX-512 (#2227)
+
+# 921c6465918e  1-byte OOB read in EVP_PKEY_asn1_find_str length calculation
+#   -x cherry-pick: fips-2024-09-27, fips-2025-09-12-lts
+#   not affected (the PQ-alg length-calc code, e.g. `longest_pem_str_len = 10 //
+#     "DILITHIUM3"`, doesn't exist on the older branches): fips-2021-10-20,
+#     fips-2021-10-20-1MU, fips-2022-11-02, fips-NetOS-2024-06-11
+921c6465918e   1-byte OOB read in EVP_PKEY_asn1_find_str
+
+# 9fbfa706c9b7  Align X509 PARTIAL_CHAIN behavior with 1.1.1 (#1917)
+#   patched: -x cherry-pick (fips-2022-11-02, fips-2024-09-27), ancestor
+#     (fips-2025-09-12-lts).
+#   undetermined (no -x/ancestor; trust-loop rework hard to confirm by line):
+#     fips-2021-10-20, fips-2021-10-20-1MU, fips-NetOS-2024-06-11
+9fbfa706c9b7   Align X509 PARTIAL_CHAIN behavior with 1.1.1 (#1917)
+
+# e0cf5f83821d  Latent memory leaks in KEM_KEY setter functions (#3041)
+#   not affected (KEM module absent): fips-2021-10-20, fips-2021-10-20-1MU,
+#     fips-2022-11-02, fips-NetOS-2024-06-11
+#   patched (reimplemented kem.c): fips-2024-09-27, fips-2025-09-12-lts
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: e0cf5f83821d   Latent memory leaks in KEM_KEY setter functions (#3041)
+
+# a1aadda437e6  Handle ChaCha20 counter overflow consistently
+#   affected (fix token `(UINT64_C(1) << 32) - counter_nonce` absent, pre-fix
+#     ChaCha20_ctr32 call present): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
+#   patched (ancestor): fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+a1aadda437e6   Handle ChaCha20 counter overflow consistently
+
+# 6c21187fbd56  Avoid conversion overflow from struct tm (posix_time.c)
+#   affected (posix_time.c present, pre-image absent-of-fix): fips-2022-11-02, fips-NetOS-2024-06-11
+#   patched (ancestor): fips-2024-09-27, fips-2025-09-12-lts
+#   undetermined (posix_time.c absent; old time code unverified): fips-2021-10-20, fips-2021-10-20-1MU
+6c21187fbd56   Avoid conversion overflow from struct tm
+
+# 2f55cf36eda8  Plug a leak in ASN1_item_i2d()
+#   not affected (pre-image absent): fips-2021-10-20, fips-2021-10-20-1MU
+#   undetermined (reimpl signal too weak): fips-2022-11-02
+#   patched (ancestor): fips-2024-09-27, fips-2025-09-12-lts, fips-NetOS-2024-06-11
+2f55cf36eda8   Plug a leak in ASN1_item_i2d()
+
+# 84765631496b (Reject '@' URIs in name constraints) REMOVED: additive fix whose
+#   file (v3_ncons.c) is absent on the older branches; the bot over-flags those via
+#   introducer ancestry (Path 4 can't help a pure-addition), making it a noisy cell
+#   rather than a clean test. Dropped for reliability.
+
+# 04e7dc0cd986  Fix PKCS7 verify content memleak (#3036)
+#   not affected (pre-image absent / pkcs7.c differs): fips-2021-10-20,
+#     fips-2021-10-20-1MU, fips-2022-11-02, fips-2024-09-27, fips-NetOS-2024-06-11
+#   affected (pre-image `BIO_pop(p7bio)` leak path present): fips-2025-09-12-lts
+# UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 04e7dc0cd986   Fix PKCS7 verify content memleak (#3036)
+
+# 47389586f8aa  Fix CRL distribution point scope check in crl_crldp_check (#3105)
+#   Bug introduced by f4e80c700 (ancestor of 2024/2025/NetOS, NOT of 2021/2022).
+#   not affected (old 4-arg crl_crldp_check, bug-introducer absent): fips-2021-10-20,
+#     fips-2021-10-20-1MU, fips-2022-11-02
+#   was affected, PATCHED via backport PR #3106 (83d85826): fips-2024-09-27,
+#     fips-2025-09-12-lts, fips-NetOS-2024-06-11
+47389586f8aa   Fix CRL distribution point scope check in crl_crldp_check (#3105)

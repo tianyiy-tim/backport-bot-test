@@ -2,8 +2,9 @@
 Given a commit, print which supported branches it affects.
 
 This is a thin CLI over the bot's impact analysis (backport_bot.is_branch_affected):
-deterministic ancestry + patch-id + file-existence, with the AI advisory as a
-fallback on the inconclusive branches. The AI step only runs if AWS Bedrock
+deterministic ancestry + patch-id + file-existence, with an always-on AI advisory
+that runs alongside the deterministic check (auditor on affected branches,
+tie-breaker on inconclusive ones). The AI step only runs if AWS Bedrock
 credentials are available; otherwise it is skipped automatically and you get the
 deterministic answer.
 
@@ -46,7 +47,7 @@ def main():
     ap.add_argument(
         "--no-ai",
         action="store_true",
-        help="deterministic only; skip the AI advisory fallback",
+        help="deterministic only; skip the AI advisory (auditor + tie-breaker)",
     )
     ap.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     args = ap.parse_args()
@@ -56,7 +57,7 @@ def main():
     introducers = bot.find_introducing_commit(commit, files)
     branches = args.branches or bot.get_supported_branches()
 
-    # Pass commit/changed_files so the AI fallback can run, unless --no-ai.
+    # Pass commit/changed_files so the AI advisory can run, unless --no-ai.
     ai_kwargs = {} if args.no_ai else {"commit": commit, "changed_files": files}
 
     results = []
@@ -72,6 +73,17 @@ def main():
                 else "deterministic (ancestry / patch-id)"
             )
             ai_note = ""
+            # Always-on auditor: surface its doubt about a deterministic
+            # "affected" verdict. Advisory only; the branch stays AFFECTED.
+            if advisory is not None and advisory.get("role") == "auditor":
+                conf = advisory.get("confidence")
+                likely = advisory.get("likely_affected")
+                if likely is False:
+                    ai_note = f"AI auditor: suspects false positive ({conf})"
+                elif likely is None:
+                    ai_note = f"AI auditor: uncertain ({conf})"
+                else:
+                    ai_note = f"AI auditor: confirms affected ({conf})"
         else:
             status = "not affected"
             detail = ""
@@ -140,6 +152,17 @@ def main():
         print(
             "AI-flagged for human review (deterministic said no): "
             + ", ".join(ai_flags)
+        )
+
+    auditor_flags = [
+        r["branch"]
+        for r in results
+        if r["needs_backport"] and "suspects false positive" in r["ai"]
+    ]
+    if auditor_flags:
+        print(
+            "AI auditor suspects a false positive (deterministic said yes; "
+            "backport still recommended for human review): " + ", ".join(auditor_flags)
         )
 
 

@@ -70,28 +70,35 @@ No test framework is used — all test scripts are standalone and print tabular 
 
 Five sequential steps, all deterministic:
 
-1. **Branch resolver** — `get_supported_branches()`: reads `git branch -r`, filters by `SUPPORTED_BRANCH_PREFIXES` (env-overridable, default covers `fips-*`, `AWS-LC-FIPS-*`, `NetOS`).
+1. **Branch resolver** — `get_supported_branches()`: manifest-first. When the repo has a `fips_versions.json` (see `VERSIONS_MANIFEST_PATH`), a branch is supported iff it exists as an `origin/` ref, is `actively_maintained`, and hasn't passed its `end_of_support` date (`branch_support_status()` computes this and is date-overridable for historical replays). When the manifest is absent it falls back to reading `git branch -r` and filtering by `SUPPORTED_BRANCH_PREFIXES` (env-overridable, default covers `fips-*`, `AWS-LC-FIPS-*`, `NetOS`).
 
 2. **Impact analyzer** — determines per-branch whether the fix is needed:
-   - `find_introducing_commit()`: for each file changed by the fix, walks the diff hunks and calls `_find_line_origin()` → `git log -L --reverse` to find the *oldest* commit that wrote those lines. Falls back to `git blame -w -M -C`. Returns a set of introducer SHAs.
-   - `is_branch_affected()`: **Path 1** — `git merge-base --is-ancestor` (SHA ancestry). **Path 2** — `git patch-id --stable` content matching (catches cherry-picked introducers with different SHAs). **Path 3** — AI advisory via `ai_impact_analysis()` when both paths are inconclusive (returns `False` + advisory dict; never auto-backports on AI output alone).
-   - `is_already_patched()`: patch-id comparison against divergent commits on the branch, skips redundant backports.
+   - `find_introducing_commit()`: for each file changed by the fix, walks the diff hunks and calls `_find_line_origin()` → `git log -L --reverse` to find the *oldest* commit that wrote those lines. Falls back to `git blame -w -M -C`. Comment-only / blank / punctuation-only hunks are skipped (via `_is_noise_line`, which is file-type-aware so C preprocessor `#` lines are kept) so a stale comment doesn't trace back to an ancient import and over-flag. Returns a set of introducer SHAs.
+   - `is_branch_affected()`: **Path 1** — `git merge-base --is-ancestor` (SHA ancestry). **Path 2** — `git patch-id --stable` content matching (catches cherry-picked introducers with different SHAs). **Path 3** — file existence (a confident, AI-free *not affected* when none of the fixed files exist on the branch under any pre-rename name). **Path 4** — pre-image precision: if the fix modifies/removes lines but **none** of those exact lines (whitespace- and comment-normalized, via `vulnerable_preimage_present`) exist on the branch, it is *not affected* — the targeted code was rewritten or never existed here — which removes ancestry over-flags that only latched onto neighbouring shared code; pure-addition fixes (no removed lines) are left flagged. **AI layer (always-on)** — runs via `ai_impact_analysis()` on every branch that has a fix commit + changed files and wasn't already settled, in one of two roles depending on the deterministic verdict (see below). Its opinion is folded into the returned verdict, gated by direction (see below).
+   - `is_already_patched()`: skips redundant backports. Returns true if the fix commit is a **direct ancestor** of the branch (it forked after the fix landed, so the fix is already present via shared history), or if a divergent commit on the branch has a matching **patch-id** (a manual cherry-pick under a different SHA).
+   - When analyzing make sure that comments that begin with a **//** either in its own line or after a line of code is ignored
+   - Furthermore when analyzing make sure that block comments in C++ as well as comments involving **#** are also omitted in the analysis portion.
 
 3. **Backport engine** — `cherry_pick_to_branch()`: checks out `origin/<branch>`, attempts `git cherry-pick`. Returns `("success", new_branch_name)` or `("conflict", conflict_output_str)`. Always cleans up on failure.
 
 4. **PR creation** — `open_pr()`: idempotent (reuses existing open PR for the same head/base). Pins to `BACKPORT_REPO` env var (critical on forks to avoid targeting upstream).
 
-5. **Summary** — `post_summary()`: posts a markdown comment on the original PR. Status markers: `[OK]` success, `[!!]` conflict, `[>>]` not affected, `[==]` already patched, `[??]` not affected (AI advisory attached).
+5. **Summary** — `post_summary()`: posts a markdown comment on the original PR. Status markers: `[OK]` success, `[!!]` conflict, `[>>]` not affected, `[==]` already patched, `[??]` not affected (AI advisory attached). When the always-on AI auditor doubts a deterministically-affected branch, the success/conflict line also carries an inline `⚠ AI auditor suspects a false positive` caveat, and the advisory block is labeled by role (auditor vs. tie-breaker).
 
 ### AI advisory function (`scripts/backport_bot.py`)
 
-AI is used for **impact analysis only**. The deterministic engine owns every action with a side effect (branch resolution, cherry-pick, PR creation, summary); AI never cherry-picks, opens PRs, or resolves conflicts. Its single job is to give the deterministic engine a second opinion on the *affected / not affected* question when git ancestry and patch-id matching are both inconclusive.
+AI is used for **impact analysis only**. The deterministic engine owns every action with a side effect (branch resolution, cherry-pick, PR creation, summary); AI never cherry-picks, opens PRs, or resolves conflicts. It runs **alongside** the deterministic check on every analyzed branch (not only as an inconclusive-case fallback), in one of two roles selected by the `det_verdict` argument:
+
+- **Auditor** (`det_verdict="affected"`): the deterministic paths flagged the branch. The oldest-introducer heuristic over-flags when the patched lines come from vendored/imported third-party code (e.g. a bulk BoringSSL import) that predates every branch and was never actually vulnerable. The auditor looks for that false positive. Because suppressing a backport can cause a *missed* fix, cancellation requires all of: a HIGH-confidence "likely not affected", `BACKPORT_AI_SUPPRESS` enabled (default on), AND a deterministic corroboration that the exact lines the fix changes are **provably absent** on the branch (`vulnerable_preimage_present(...) is False`). If the vulnerable lines are still present, or the fix is a pure addition (nothing to check), the PR is opened with the auditor's caveat attached instead. A suppression sets `overrode_deterministic` on the advisory.
+- **Tie-breaker** (`det_verdict="inconclusive"`): ancestry and patch-id were both inconclusive but a changed file is present. A "likely affected" here upgrades the branch to a backport. This is the safe direction: it only ever adds a PR, so it can close a false negative but cannot create one.
+
+Moving AI from a fallback to always-on is deliberate: a fallback that only runs when deterministic is *unsure* structurally cannot catch deterministic *false positives*, because those occur on the confident `affected` path (Path 1/2) that short-circuits before any AI call. The auditor role exists precisely to inspect that path.
 
 `ai_impact_analysis()` uses `AnthropicBedrock` via the `anthropic` SDK. Model: `_BEDROCK_MODEL_ID` (cross-region inference profile, verify in AWS console; env-overridable). It uses `thinking: {"type": "adaptive"}` and streaming (`with client.messages.stream(...) as stream: stream.get_final_message()`). `_ai_client()` resolves credentials via the boto3 default chain; if the SDK or credentials are unavailable it returns `None` and the AI path silently skips, leaving a clean deterministic result.
 
-- **`ai_impact_analysis()`**: called as Path 3 in `is_branch_affected()`. Sends the fix diff plus rename-aware file snapshots from the target branch. Output is a `<details>` advisory block in the PR summary comment. It is returned alongside the deterministic verdict and never overrides it.
+- **`ai_impact_analysis()`**: called from `is_branch_affected()` for both roles. Sends the fix diff plus rename-aware file snapshots from the target branch, with a role-specific task block. Output is a `<details>` advisory block in the PR summary comment. The advisory dict carries a `role` key (`"auditor"` / `"tiebreaker"`) and an `overrode_deterministic` flag set when its opinion changed the verdict.
 
-AI output is **advisory only** — it is never committed, auto-applied, or used to suppress a deterministic finding. Cherry-pick conflicts are never auto-resolved: the bot aborts the pick and flags the branch (`[!!]`) for a human engineer to backport manually.
+AI is used for impact analysis only: it is never committed or auto-applied, and it never resolves conflicts. It now participates in the affected/not-affected verdict (tie-breaker upgrades an inconclusive branch, high-confidence auditor suppression cancels a suspected over-flag), which trades away the earlier guarantee that AI can never cause a missed backport; set `BACKPORT_AI_SUPPRESS=0` to keep the auditor advisory-only, or `BACKPORT_DISABLE_AI=1` to force the deterministic-only path. Cherry-pick conflicts are never auto-resolved: the bot aborts the pick and flags the branch (`[!!]`) for a human engineer to backport manually.
 
 ### Agentic prototype (`scripts/agentic_impact.py`)
 
@@ -113,8 +120,12 @@ A separate research prototype for cases requiring multi-step investigation (e.g.
 | `AWS_REGION` | GitHub variable | Bedrock region (default `us-east-1`) |
 | `GITHUB_TOKEN` | automatic | `gh` CLI auth + `git push` |
 | `BACKPORT_REPO` | auto (`github.repository`) | Pins PRs/comments to this repo |
-| `BACKPORT_BRANCH_PREFIXES` | optional env | Override supported branch prefixes (comma-separated) |
+| `BACKPORT_BRANCH_PREFIXES` | optional env | Override supported branch prefixes (comma-separated); used only when no `fips_versions.json` manifest is present |
+| `BACKPORT_VERSIONS_MANIFEST` | optional env | Path (repo-relative) to the FIPS branch manifest; default `fips_versions.json` |
 | `BACKPORT_MAINLINE_REF` | optional env | Override mainline ref (default `origin/main`) |
+| `BACKPORT_GENERATED_PATHS` | optional env | Comma-separated path prefixes of auto-generated/derived files excluded from patch-id matching (default `generated-src`); prevents a regenerated generated-tree from making an already-applied backport look novel (redundant-backport false positive) |
+| `BACKPORT_DISABLE_AI` | optional env | `1` forces the deterministic-only path (skips all AI calls) |
+| `BACKPORT_AI_SUPPRESS` | optional env | `0` stops the auditor from cancelling a backport (advisory-only); default on |
 
 ## Known design constraints
 

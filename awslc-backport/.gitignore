@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local replay/run artifacts (never checked in)
+*_results.txt
+.backport-runs/
