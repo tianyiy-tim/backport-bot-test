@@ -60,15 +60,14 @@ from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 import engine as bot
 from ai import ai_impact_analysis
 
-# Run-state lives inside the target repo so that `analyze` -> `apply` reuse is
-# scoped per-checkout (and never writes into the installed package directory).
+# Run-state lives next to the tool itself (inside the awslc-backport folder) so
+# `analyze` -> `apply` reuse never writes into the target repo checkout.
 _RUN_DIR_NAME = ".backport-runs"
 _RUN_FILE_NAME = "last-run.json"
 
 
 def _run_dir() -> Path:
-    base = bot.REPO_PATH or os.getcwd()
-    return Path(base) / _RUN_DIR_NAME
+    return Path(os.path.dirname(os.path.abspath(__file__))) / _RUN_DIR_NAME
 
 
 def _run_file() -> Path:
@@ -638,23 +637,17 @@ def _print_summary(
     print(f"Changed files: {list(files)}")
     print(f"Introducer(s): {[s[:8] for s in introducers] or '(none / new file)'}")
     print()
-    print(f"  {'branch':<22} {'status':<16} basis")
-    print(f"  {'-' * 22} {'-' * 16} {'-' * 40}")
+    # Size the branch/status columns to the widest value so long names (e.g. a
+    # "-snapshot" branch) never break the alignment.
+    bw = max([len("branch")] + [len(b) for b in buckets])
+    sw = max([len("status")] + [len(_LABEL[s]) for s in buckets.values()])
+    print(f"  {'branch':<{bw}} {'status':<{sw}} basis")
+    print(f"  {'-' * bw} {'-' * sw} {'-' * 40}")
     # Show AFFECTED first (the actionable branches), then the rest; buckets are
     # already newest-first, and the sort is stable, so each group keeps that order.
     _ORDER = {AFFECTED: 0, UNSURE: 1, ALREADY: 2, NOT_AFFECTED: 3}
     for branch, state in sorted(buckets.items(), key=lambda kv: _ORDER.get(kv[1], 9)):
-        print(f"  {branch:<22} {_LABEL[state]:<16} {decided_by.get(branch, '')}")
-
-    def names(state):
-        return [b for b, s in buckets.items() if s == state]
-
-    print()
-    aff, no, pat = names(AFFECTED), names(NOT_AFFECTED), names(ALREADY)
-    print(f"Affected (need backport): {', '.join(aff) or '-'}")
-    print(f"Not affected: {', '.join(no) or '-'}")
-    if pat:
-        print(f"Already patched (skip): {', '.join(pat)}")
+        print(f"  {branch:<{bw}} {_LABEL[state]:<{sw}} {decided_by.get(branch, '')}")
 
 
 # --------------------------------------------------------------------------
@@ -933,7 +926,7 @@ def cmd_apply(args) -> int:
 
 
 def cmd_clear(args) -> int:
-    """Remove the saved run state (.backport-runs/) from the target repo."""
+    """Remove the saved run state (.backport-runs/) from the tool folder."""
     run_dir = _run_dir()
     if run_dir.exists():
         shutil.rmtree(run_dir, ignore_errors=True)
@@ -948,9 +941,15 @@ def cmd_clear(args) -> int:
 # --------------------------------------------------------------------------
 
 
-def _resolve_repo_path(repo_arg: Optional[str]) -> Optional[str]:
-    """Resolve the target repo from --repo, then BACKPORT_REPO_PATH, then cwd."""
-    return repo_arg or os.environ.get("BACKPORT_REPO_PATH") or None
+def _resolve_repo_path(repo_arg: Optional[str]) -> str:
+    """Resolve the target repo: --repo, then $BACKPORT_REPO_PATH, then the checkout
+    this tool lives in. Because awslc-backport/ sits inside the AWS-LC repo, the
+    last default means `--repo` is optional when you run the tool from the repo."""
+    return (
+        repo_arg
+        or os.environ.get("BACKPORT_REPO_PATH")
+        or os.path.dirname(os.path.abspath(__file__))
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -964,8 +963,8 @@ def _build_parser() -> argparse.ArgumentParser:
     def add_common(p):
         p.add_argument(
             "--repo",
-            help="path to the AWS-LC checkout to operate on "
-            "(default: $BACKPORT_REPO_PATH, else the current directory)",
+            help="path to the AWS-LC checkout to operate on (default: "
+            "$BACKPORT_REPO_PATH, else the checkout this tool lives in)",
         )
         p.add_argument(
             "--base", help="base ref to apply the patch on (default origin/main)"
@@ -1032,7 +1031,8 @@ def _build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=cmd_apply)
 
     pc = sub.add_parser(
-        "clear", help="remove the saved run state (.backport-runs/) from the repo"
+        "clear",
+        help="remove the saved run state (.backport-runs/) from the tool folder",
     )
     add_common(pc)
     pc.set_defaults(func=cmd_clear)
@@ -1040,10 +1040,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _target_repo(args) -> str:
-    """Resolve the AWS-LC checkout (--repo / $BACKPORT_REPO_PATH / cwd), confirm it
-    is a git repo, point the engine at its top level, and chdir there. Returns the
-    repo's top-level path; raises RuntimeError if it isn't a git repository."""
-    repo = _resolve_repo_path(getattr(args, "repo", None)) or os.getcwd()
+    """Resolve the AWS-LC checkout (--repo / $BACKPORT_REPO_PATH / the repo this
+    tool lives in), confirm it is a git repo, point the engine at its top level,
+    and chdir there. Returns the top-level path; raises RuntimeError if not a repo."""
+    repo = _resolve_repo_path(getattr(args, "repo", None))
     top = subprocess.run(
         ["git", "-C", repo, "rev-parse", "--show-toplevel"],
         capture_output=True,
