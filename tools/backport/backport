@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Thin wrapper so you can run `./backport <cmd>` instead of `python3 backport_cli.py`.
-# Resolves its own real location (via python3, which the tool already requires) so
-# it keeps working when invoked through a symlink on your PATH, e.g.
-#   ln -s "$PWD/backport" /usr/local/bin/backport   ->  run `backport` anywhere.
-here="$(cd "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")")" && pwd)"
-exec python3 "$here/backport_cli.py" "$@"
