@@ -16,13 +16,28 @@ Two hard safety rules:
 
 ## Files
 
-- `cli.py` — the CLI. Two subcommands:
-  - `analyze [patch]` — build a temp commit from the patch (in a throwaway
-    worktree), bucket every branch (AFFECTED / NOT_AFFECTED / UNSURE / ALREADY),
-    resolve UNSURE via the AI, flag suspect over-flags for review, print, save the
-    run. With no patch arg it uses the repo's `git diff HEAD`.
-  - `apply [--all-affected | --branches ..]` — cherry-pick the patch onto the
-    chosen branches locally, reporting clean vs conflict.
+The CLI is split by responsibility (mirroring the small-file layout of the team's
+other util tools) so no single file is a wall of code:
+
+- `main.py` — entrypoint: the argument parser and subcommand dispatch, plus the
+  top-level `BackportError` handler. Also `backport`, a shell wrapper.
+- `gitutil.py` — everything that shells out to git: `run`/`git`, throwaway
+  `temp_worktree`, the `cherry_pick_local` primitive (shared by apply + ci), the
+  two `git diff-tree` parsers, and repo targeting (`resolve_repo_path` /
+  `target_repo` / `resolve_patch_path`).
+- `patches.py` — `commit_from_patch` (patch -> temp commit in a worktree),
+  patch-source resolution (`read_patch` / `resolve_patch_and_base`), and the
+  test-file confirmation prompt.
+- `runstate.py` — the `analyze` -> `apply` cache (`save_run` / `load_run` /
+  `delete_patch_artifacts`), stored inside the tool folder.
+- `verdicts.py` — `bucket_branches` (deterministic classification) and the two
+  advisory AI passes (`resolve_unsure`, `review_suspect_affected`,
+  `resolve_inconclusive`).
+- `render.py` — the analyze table, backport hint, and JSON output.
+- `analyze.py` / `apply.py` / `ci.py` — one file per command (`cmd_analyze`;
+  `cmd_apply` + `cmd_clear`; `cmd_ci`).
+- `common.py` — shared leaf module: the verdict constants (`AFFECTED` …, `LABEL`)
+  and the `BackportError` type everyone can import without a cycle.
 - `engine.py` — deterministic core. Repo targeting (`set_repo_path` / `REPO_PATH`
   / `_git`), branch resolution, `find_introducing_commit`, `is_branch_affected`,
   `present_introducers`, `is_already_patched`, `vulnerable_preimage_present`, and
@@ -30,7 +45,11 @@ Two hard safety rules:
 - `ai.py` — `ai_impact_analysis` (advisory only; never acts alone). Bedrock via
   the `anthropic` SDK; degrades to `None` with no SDK/credentials.
 
-## Bucketing (`cli.bucket_branches`)
+Import DAG (no cycles): `common` <- `gitutil` <- {`patches`, `verdicts`} <-
+{`analyze`, `apply`, `ci`} <- `main`; `render` <- `common`; `engine`/`ai` are the
+leaf impact core.
+
+## Bucketing (`verdicts.bucket_branches`)
 
 Per branch, deterministically (no AI):
 1. `is_branch_affected(introducers, branch)` (ancestry + patch-id) → AFFECTED

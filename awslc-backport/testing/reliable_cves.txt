@@ -185,21 +185,15 @@ cf2e09fb5d40   evp: fix DSA keygen error-path UAF/double-free
 # UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: f295f20a1d3d   Key state consistency in PQDSA_KEY setter functions (#3040)
 # UNTRIAGED (no team backport anywhere -> no reliable ground truth), removed: 0430b7d02f3d   Refactor PQDSA_KEY set_raw to goto-err cleanup (#2993)
 
-# ML-KEM fixes in crypto/fipsmodule/ml_kem. NOTE: ML-KEM was later MOVED here
-# from the old out-of-module path crypto/ml_kem/. fips-NetOS-2024-06-11 forked
-# BEFORE that move, so it still carries ML-KEM at the OLD path and IS affected
-# (the import commit is its ancestor) — NOT "not affected". So:
-#   not affected (no ML-KEM at all): fips-2021-10-20, fips-2021-10-20-1MU, fips-2022-11-02
-#   ancestor (fipsmodule/ml_kem):    fips-2024-09-27, fips-2025-09-12-lts
-#   affected via OLD-path ML-KEM (bot flags; not backported -> shows as FP but the
-#     module IS present): fips-NetOS-2024-06-11
-f89c9bec9aea   Add return checks on SHA3 functions in ML-KEM (#1859)
-ed6d6ca3cf56   ML-KEM encaps key modulus check optimization (#1874)
-# (These were falsely AFFp on old branches from a co-changed test file until the
-#  pre-image check began skipping test files; the NetOS flag is via the ML-KEM
-#  import ancestor, which is defensible — NetOS has the module at the old path.)
-c5d3f3dd39df   ML-KEM decapsulation key hash check (#1873)
-2835116571e8   ML-KEM encapsulation key modulus check (#1868)
+# ML-KEM fixes in crypto/fipsmodule/ml_kem. All REMOVED as a group: these change
+# the final FIPS-203 ml_kem_ref module, which does not exist on fips-1.0/2.0 (ML-KEM
+# postdates them). NetOS only carries the earlier IPD-draft module (crypto/ml_kem/,
+# different code) and none of these were backported to it -> the NetOS verdict is an
+# unverifiable pure-addition over-flag, so the ground truth is unreliable.
+#   removed: f89c9bec9aea   Add return checks on SHA3 functions in ML-KEM (#1859)
+#   removed: ed6d6ca3cf56   ML-KEM encaps key modulus check optimization (#1874)
+#   removed: c5d3f3dd39df   ML-KEM decapsulation key hash check (#1873)
+#   removed: 2835116571e8   ML-KEM encapsulation key modulus check (#1868)
 
 # bfd98fa038e0  CVE-2020-1971 (NULL-dereference in GENERAL_NAME_cmp)
 #   Predates every supported branch's fork point, so it's a direct ancestor of
@@ -351,11 +345,12 @@ eb0c0c0d8e4e   OOB input read in AES-XTS Decrypt AVX-512 (#2227)
 921c6465918e   1-byte OOB read in EVP_PKEY_asn1_find_str
 
 # 9fbfa706c9b7  Align X509 PARTIAL_CHAIN behavior with 1.1.1 (#1917)
-#   patched: -x cherry-pick (fips-2022-11-02, fips-2024-09-27), ancestor
-#     (fips-2025-09-12-lts).
-#   undetermined (no -x/ancestor; trust-loop rework hard to confirm by line):
-#     fips-2021-10-20, fips-2021-10-20-1MU, fips-NetOS-2024-06-11
-9fbfa706c9b7   Align X509 PARTIAL_CHAIN behavior with 1.1.1 (#1917)
+#   Pure-addition trust-loop rework. Verified affected+unfixed on ALL of
+#   fips-2021-10-20/-1MU/fips-2022-11-02/NetOS/fips-2024-09-27 (2025 ancestor), but the
+#   team only hand-backported 2022 + 2024 -> the remaining three are "affected but not
+#   shipped", a product call the bot can't distinguish. REMOVED to avoid baking that
+#   ambiguity into the ground truth.
+#   removed: 9fbfa706c9b7   Align X509 PARTIAL_CHAIN behavior with 1.1.1 (#1917)
 
 # e0cf5f83821d  Latent memory leaks in KEM_KEY setter functions (#3041)
 #   not affected (KEM module absent): fips-2021-10-20, fips-2021-10-20-1MU,
@@ -399,3 +394,16 @@ a1aadda437e6   Handle ChaCha20 counter overflow consistently
 #   was affected, PATCHED via backport PR #3106 (83d85826): fips-2024-09-27,
 #     fips-2025-09-12-lts, fips-NetOS-2024-06-11
 47389586f8aa   Fix CRL distribution point scope check in crl_crldp_check (#3105)
+
+# df1f12559096  Fix SSL_OP_IGNORE_UNEXPECTED_EOF for socket BIOs (#3341)
+#   Line-removal fix: drops the buggy `&& BIO_eof(rbio)` guard that #3294 added to
+#   ssl/ssl_buffer.cc, so pre-image presence is deterministically checkable.
+#   Ground truth by exact buggy-guard presence (verified in-repo; #3341 is still an
+#   open PR so there are no hand-backports, but no branch is fixed either, so each
+#   branch's real tip already is the unfixed pre-image world):
+#     affected (buggy guard present): fips-2024-09-27, fips-2025-09-12-lts,
+#       fips-2026-06-26-snapshot   (#3294 is a mainline ancestor only of snapshot;
+#       it was hand-backported to 2024 + 2025).
+#     not affected (no SSL_OP_IGNORE_UNEXPECTED_EOF guard): fips-2021-10-20,
+#       fips-2021-10-20-1MU, fips-2022-11-02, fips-NetOS-2024-06-11
+df1f12559096   Fix SSL_OP_IGNORE_UNEXPECTED_EOF for socket BIOs (#3341)

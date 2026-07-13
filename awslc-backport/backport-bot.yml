@@ -1,0 +1,68 @@
+# AWS-LC backport bot (post-merge automation).
+#
+# When a PR is merged carrying the `needs-backport` label, analyze the merged
+# commit with the impact engine (AI layer on) and open a backport PR on THIS
+# fork for every AFFECTED release branch. Clean cherry-picks become PRs (never
+# auto-merged); conflicts are reported back on the source PR for manual work.
+#
+# The tool (awslc-backport/main.py) refuses to target upstream aws/aws-lc, so
+# this only ever opens PRs within the fork it runs in.
+name: Backport bot
+
+on:
+  pull_request:
+    types: [closed, labeled]
+
+# GITHUB_TOKEN needs to push branches and open/comment on PRs; id-token is for
+# the OIDC role that grants Bedrock access to the AI layer.
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  backport:
+    # Only on a merged PR that carries the needs-backport label.
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'needs-backport')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all release branches
+        run: git fetch --no-tags origin "+refs/heads/*:refs/remotes/origin/*"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade anthropic boto3
+
+      # AI layer (Amazon Bedrock). If this step is removed or the role is
+      # unset, the tool still runs deterministically and flags anything it
+      # cannot confirm as AFFECTED (safe: it over-flags, never misses).
+      - name: Configure AWS credentials (Bedrock)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.BEDROCK_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Configure git identity
+        run: |
+          git config user.name "aws-lc-backport-bot"
+          git config user.email "backport-bot@users.noreply.github.com"
+
+      - name: Analyze and open backport PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_REGION: us-east-1
+        run: |
+          python3 awslc-backport/main.py ci \
+            --commit "${{ github.event.pull_request.merge_commit_sha }}" \
+            --pr "${{ github.event.pull_request.number }}"

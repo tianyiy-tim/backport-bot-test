@@ -3,9 +3,10 @@ Backport engine: the deterministic core.
 
 Branch resolution, git/text helpers, impact analysis (is_branch_affected),
 already-patched detection, and the vulnerable-pre-image check. The advisory AI
-layer is in ai.py; the pre-merge workflow (analyze/apply) is in cli.py. Every
-git command runs against the configured REPO_PATH (set via set_repo_path), so
-the engine can target an arbitrary AWS-LC checkout without chdir.
+layer is in ai.py; the pre-merge CLI (analyze/apply/ci) is split across main.py
+and its helper modules. Every git command runs against the configured REPO_PATH
+(set via set_repo_path), so the engine can target an arbitrary AWS-LC checkout
+without chdir.
 
 Sections, top to bottom:
   1. Repository targeting          set_repo_path / _run / _git
@@ -66,12 +67,6 @@ _AI_MAX_FILE_BYTES = 45_000  # cap per-file context bytes fed to the model
 # never collide across fixes/sandboxes.
 _REMOVED_LINES_CACHE: "dict[tuple, list]" = {}
 _PREIMAGE_CACHE: "dict[tuple, object]" = {}
-
-
-def clear_preimage_caches():
-    """Drop the per-process pre-image caches (call between independent repos)."""
-    _REMOVED_LINES_CACHE.clear()
-    _PREIMAGE_CACHE.clear()
 
 
 # Auto-generated/derived files (e.g. generated-src/). They are regenerated
@@ -701,12 +696,16 @@ def _run_ai_advisory(commit, branch, changed_files, introducing_commits, det_aff
     if advisory is not None:
         advisory["role"] = "auditor" if det_affected else "tiebreaker"
         advisory["overrode_deterministic"] = False
-        print(
-            f"[ai] {advisory['role']} for {branch}: det={det_verdict}, "
-            f"likely_affected={advisory['likely_affected']}, "
-            f"confidence={advisory['confidence']}",
-            file=sys.stderr,
-        )
+        # Live progress line; off by default so it doesn't interleave with the
+        # replay's per-fix tables (the AI verdict is already in each fix's Notes).
+        # Set BACKPORT_VERBOSE=1 to see it.
+        if os.environ.get("BACKPORT_VERBOSE"):
+            print(
+                f"[ai] {advisory['role']} for {branch}: det={det_verdict}, "
+                f"likely_affected={advisory['likely_affected']}, "
+                f"confidence={advisory['confidence']}",
+                file=sys.stderr,
+            )
     return advisory
 
 
