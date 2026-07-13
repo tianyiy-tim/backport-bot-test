@@ -10,24 +10,26 @@ into a PR** — `apply` only creates local `backport/<branch>/<id>` branches.
 ## Layout
 
 ```
-backport/
-  main.py           Entrypoint: argument parser + subcommand dispatch.
-  backport          Wrapper script (bridges AWS_REGION, runs main.py).
-  gitutil.py        Git plumbing, throwaway worktrees, cherry-pick, repo targeting.
-  patches.py        Patch -> temp commit, patch-source resolution, test-file prompt.
-  runstate.py       The analyze -> apply run-state cache.
-  verdicts.py       Deterministic bucketing + the advisory AI passes.
-  render.py         The analyze table / JSON output.
-  analyze.py        The `analyze` command.
-  apply.py          The `apply` and `clear` commands.
-  ci.py             The `ci` command (post-merge PR automation).
-  engine.py         Deterministic core: branch resolution, impact analysis
-                    (is_branch_affected, vulnerable_preimage_present), git helpers.
-  ai.py             Advisory AI auditor / tie-breaker (never changes a verdict alone).
-  common.py         Shared verdict constants + the BackportError type.
+awslc-backport/
+  backport          Wrapper script (bridges AWS_REGION, runs src/main.py).
   backport-bot.yml  Reference GitHub Actions workflow (copy into .github/workflows/).
   requirements.txt  Runtime deps for the AI layer (anthropic, boto3).
+  README.md         This file.
   CLAUDE.md         Architecture / maintainer notes.
+  src/
+    main.py         Entrypoint: argument parser + subcommand dispatch.
+    gitutil.py      Git plumbing, throwaway worktrees, cherry-pick, repo targeting.
+    patches.py      Patch -> temp commit, patch-source resolution, test-file prompt.
+    runstate.py     The analyze -> apply run-state cache.
+    verdicts.py     Deterministic bucketing + the advisory AI passes.
+    render.py       The analyze table / JSON output.
+    analyze.py      The `analyze` command.
+    apply.py        The `apply` and `clear` commands.
+    ci.py           The `ci` command (post-merge PR automation).
+    engine.py       Deterministic core: branch resolution, impact analysis
+                    (is_branch_affected, vulnerable_preimage_present), git helpers.
+    ai.py           Advisory AI auditor / tie-breaker (never changes a verdict alone).
+    common.py       Shared verdict constants + the BackportError type.
   testing/
     replay_real_cve.py        Real replays: roll a sandbox back to before a fix
                               and grade the engine against what the team shipped.
@@ -45,15 +47,17 @@ else the current directory). The checkout must have the release branches fetched
 
 ```bash
 # analyze the repo's current uncommitted fix (git diff HEAD):
-python3 main.py analyze --repo <aws-lc>
+./backport analyze --repo <aws-lc>
 
 # or an explicit patch from anywhere:
 git -C <aws-lc> diff > fix.patch
-python3 main.py analyze fix.patch --repo <aws-lc>
+./backport analyze fix.patch --repo <aws-lc>
 
 # cherry-pick onto local backport branches (no push, no PR):
-python3 main.py apply --all-affected --repo <aws-lc>
+./backport apply --all-affected --repo <aws-lc>
 ```
+
+(`./backport` is the wrapper; equivalently `python3 src/main.py <cmd>`.)
 
 ## Post-merge automation (GitHub Actions)
 
@@ -65,8 +69,8 @@ source PR for manual handling.
 
 ```bash
 # what CI runs (open PRs on the fork for a merged commit):
-python3 main.py ci --commit <merged-sha> --pr <source-pr-number>
-python3 main.py ci --commit <merged-sha> --dry-run   # analyze + cherry-pick, no push/PR
+./backport ci --commit <merged-sha> --pr <source-pr-number>
+./backport ci --commit <merged-sha> --dry-run   # analyze + cherry-pick, no push/PR
 ```
 
 Safety: `ci` **refuses to run against upstream `aws/aws-lc`** — it only ever

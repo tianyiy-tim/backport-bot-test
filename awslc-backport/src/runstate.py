@@ -20,8 +20,12 @@ _RUN_FILE_NAME = "last-run.json"
 
 
 def run_dir() -> Path:
-    """Directory holding the saved run (inside the tool folder)."""
-    return Path(os.path.dirname(os.path.abspath(__file__))) / _RUN_DIR_NAME
+    """Directory holding the saved run.
+
+    Kept at the tool root (the parent of ``src/``), not next to this module, so
+    the cache sits beside the README rather than buried in the source folder.
+    """
+    return Path(__file__).resolve().parent.parent / _RUN_DIR_NAME
 
 
 def run_file() -> Path:

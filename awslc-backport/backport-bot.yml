@@ -5,7 +5,7 @@
 # fork for every AFFECTED release branch. Clean cherry-picks become PRs (never
 # auto-merged); conflicts are reported back on the source PR for manual work.
 #
-# The tool (awslc-backport/main.py) refuses to target upstream aws/aws-lc, so
+# The tool (awslc-backport/src/main.py) refuses to target upstream aws/aws-lc, so
 # this only ever opens PRs within the fork it runs in.
 name: Backport bot
 
@@ -63,6 +63,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AWS_REGION: us-east-1
         run: |
-          python3 awslc-backport/main.py ci \
+          python3 awslc-backport/src/main.py ci \
             --commit "${{ github.event.pull_request.merge_commit_sha }}" \
             --pr "${{ github.event.pull_request.number }}"

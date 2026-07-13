@@ -16,10 +16,12 @@ Two hard safety rules:
 
 ## Files
 
-The CLI is split by responsibility (mirroring the small-file layout of the team's
-other util tools) so no single file is a wall of code:
+The CLI source lives in `src/` and is split by responsibility (mirroring the
+small-file layout of the team's other util tools) so no single file is a wall of
+code. Docs, the `backport` wrapper, `requirements.txt`, the reference workflow,
+and `testing/` sit at the tool root.
 
-- `main.py` — entrypoint: the argument parser and subcommand dispatch, plus the
+- `src/main.py` — entrypoint: the argument parser and subcommand dispatch, plus the
   top-level `BackportError` handler. Also `backport`, a shell wrapper.
 - `gitutil.py` — everything that shells out to git: `run`/`git`, throwaway
   `temp_worktree`, the `cherry_pick_local` primitive (shared by apply + ci), the

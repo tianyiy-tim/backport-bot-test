@@ -44,9 +44,9 @@ def print_backport_hint(buckets: Dict[str, str]) -> None:
     if not affected:
         return
     print("\nTo cherry-pick onto local backport branches (nothing is pushed), run:")
-    print("  python3 main.py apply --all-affected")
+    print("  ./backport apply --all-affected")
     print("or target specific branches, e.g.:")
-    print(f"  python3 main.py apply --branches {' '.join(affected)}")
+    print(f"  ./backport apply --branches {' '.join(affected)}")
 
 
 def emit_analysis(

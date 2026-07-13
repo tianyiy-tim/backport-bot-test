@@ -16,8 +16,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-# engine.py lives one directory up (awslc-backport/engine.py).
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# engine.py lives in the src/ folder one directory up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import engine  # noqa: E402
 

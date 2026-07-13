@@ -68,8 +68,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-# The engine lives one directory up (awslc-backport/); import from there.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The engine lives in the src/ folder one directory up; import from there.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ai import _ai_client  # noqa: E402
 from engine import (  # noqa: E402
     _parse_eos_date,

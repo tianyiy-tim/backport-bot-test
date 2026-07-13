@@ -12,4 +12,4 @@ if [ -n "${AWS_REGION:-}" ] && [ -z "${AWS_DEFAULT_REGION:-}" ]; then
   export AWS_DEFAULT_REGION="$AWS_REGION"
 fi
 
-exec python3 "$here/main.py" "$@"
+exec python3 "$here/src/main.py" "$@"
