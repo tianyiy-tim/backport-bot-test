@@ -65,16 +65,18 @@ committed-markers branch, no draft PR). `ci` only *reports* conflicts (the summa
 cell lists the clashing files and points at `resolve`); `apply` reports them too.
 
 `resolve` (`resolve.py`) is the interactive fixer. It buckets like `ci`, then for
-each AFFECTED branch checks it out in a **persistent** `add_worktree`, runs the
-cherry-pick live, and on conflict walks `unmerged_files` one at a time, prompting
+each AFFECTED branch checks it out in a **persistent** `add_worktree` and runs the
+cherry-pick live. A **clean** pick is aborted and skipped (`ci`/`apply` own clean
+backports; re-opening them here would clash on the same branch name). A
+**conflicting** pick is walked via `unmerged_files` one file at a time, prompting
 Y/N per file. On Y it re-checks `file_has_conflict_markers` and refuses to stage
 (re-prompts) if markers remain; `git add`ing a file drops it from the unmerged set
 so the loop advances. When all files are staged it runs `cherry-pick --continue`,
 creates the local branch, removes the worktree, and (after a final Y/N) opens one
-non-draft PR per branch. `git rerere` is enabled (`enable_rerere`, autoupdate
-**off** on purpose) so a resolution recorded on one branch auto-applies to a twin
-branch's identical conflict but still surfaces marker-free for the user to verify.
-Unfinished branches leave their worktree in place and are not PR'd.
+non-draft PR per **resolved** branch. `git rerere` is enabled (`enable_rerere`,
+autoupdate **off** on purpose) so a resolution recorded on one branch auto-applies
+to a twin branch's identical conflict but still surfaces marker-free for the user
+to verify. Unfinished branches leave their worktree in place and are not PR'd.
 
 ## Bucketing (`verdicts.bucket_branches`)
 

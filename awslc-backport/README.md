@@ -95,11 +95,12 @@ crypto/fipsmodule/dh/dh.c requires conflict resolution, has the conflict been re
 
 Edit the file in the printed worktree path, answer `Y`, and it re-scans for
 leftover `<<<<<<<` / `>>>>>>>` markers (refusing to stage a half-fixed file) before
-moving to the next file, then the next branch. `git rerere` is enabled, so a
-resolution recorded on one branch is auto-applied to identical conflicts on
-sibling branches (e.g. the FIPS twins) — you still confirm each one. When every
-branch is ready it asks whether to open PRs, then pushes and opens **one normal
-(non-draft) PR per branch**, titled `[backport <branch>] <fix subject>`.
+moving to the next file, then the next branch. Clean cherry-picks are skipped
+(`ci`/`apply` open those). `git rerere` is enabled, so a resolution recorded on
+one branch is auto-applied to identical conflicts on sibling branches (e.g. the
+FIPS twins) — you still confirm each one. When the conflicts are resolved it asks
+whether to open PRs, then pushes and opens **one normal (non-draft) PR per
+resolved branch**, titled `[backport <branch>] <fix subject>`.
 
 ```bash
 ./backport resolve --pr 3337 --repo <aws-lc>

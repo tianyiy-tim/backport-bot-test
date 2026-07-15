@@ -2,15 +2,17 @@
 The ``resolve`` command: interactive, local backport-conflict resolution.
 
 Given a fix (``--commit <sha>`` or ``--pr <number>``), find the AFFECTED release
-branches (AI on unless ``--no-ai``) and, for each one that conflicts, walk the
-user file-by-file through resolving the conflict in a real ``git worktree`` they
-can edit. ``git rerere`` is enabled, so resolving a conflict once auto-applies to
-identical conflicts on sibling branches (e.g. the FIPS twin branches). When every
-branch is ready, optionally push and open one normal (non-draft) PR per branch.
+branches (AI on unless ``--no-ai``) and, for each one whose cherry-pick
+**conflicts**, walk the user file-by-file through resolving it in a real ``git
+worktree`` they can edit. ``git rerere`` is enabled, so resolving a conflict once
+auto-applies to identical conflicts on sibling branches (e.g. the FIPS twin
+branches). When the conflicts are resolved, optionally push and open one normal
+(non-draft) PR per resolved branch.
 
-This is the local, human-in-the-loop counterpart to ``ci``: ``ci`` opens PRs for
-the clean cherry-picks and only *reports* conflicts; ``resolve`` is where those
-conflicts actually get fixed.
+Clean cherry-picks are **skipped** here on purpose: ``ci`` (and ``apply``) already
+open those, so re-opening them from ``resolve`` would clash on the same branch
+name. ``resolve`` owns exactly the branches ``ci`` reported as conflicts — it is
+the local, human-in-the-loop counterpart that finishes what ``ci`` could not.
 """
 
 import json
@@ -144,7 +146,8 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
     resolving conflicts interactively.
 
     Returns ``(status, detail)``:
-      - ``("clean", local_branch)``   applied with no conflict; worktree removed.
+      - ``("clean", None)``           applied with no conflict; skipped (clean
+                                      backports are `ci`/`apply`'s job), worktree removed.
       - ``("ready", local_branch)``   conflicts resolved and committed; worktree removed.
       - ``("blocked", worktree)``     files left unresolved; worktree KEPT for the user.
       - ``("error", message)``
@@ -160,11 +163,16 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
 
     pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
     if pick.returncode == 0:
-        new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
-        git("branch", "-f", local_branch, new_sha)
+        # No conflict -> nothing to resolve. `ci` (and `apply`) already open clean
+        # backport PRs, so we skip it here to avoid clashing on the same branch
+        # name. `resolve` only owns the branches that actually conflict.
+        git("cherry-pick", "--abort", check=False, cwd=wt)
         remove_worktree(wt)
-        print(f"  OK {branch}: clean cherry-pick, no conflicts.")
-        return "clean", local_branch
+        print(
+            f"  OK {branch}: clean cherry-pick, no conflict -- skipping "
+            "(clean backports are opened by `ci`/`apply`)."
+        )
+        return "clean", None
 
     print(f"\n  !! {branch}: conflicts -- edit the files in:\n      {wt}")
     unresolved = _walk_conflicts(wt, branch)
@@ -287,20 +295,24 @@ def cmd_resolve(args) -> int:
         return 3
 
     enable_rerere()
-    print(f"\nResolving backports for: {', '.join(targets)}")
+    print(f"\nResolving conflicting backports among: {', '.join(targets)}")
     print(
-        "(git rerere is on: resolving a conflict once auto-applies it to identical "
-        "conflicts on sibling branches.)"
+        "(clean cherry-picks are skipped -- `ci`/`apply` open those; `resolve` only "
+        "handles branches that conflict. git rerere is on, so resolving a conflict "
+        "once auto-applies it to identical conflicts on sibling branches.)"
     )
 
-    ready: "dict[str, str]" = {}  # branch -> local_branch
+    resolved: "dict[str, str]" = {}  # conflict branch -> local_branch (ready to PR)
+    clean_skipped: "list[str]" = []  # clean cherry-picks (ci/apply's job)
     blocked: "dict[str, str]" = {}  # branch -> worktree path
     errors: "dict[str, str]" = {}  # branch -> message
     for branch in targets:
         print(f"\n== {branch} " + "=" * max(0, 48 - len(branch)))
         status, detail = _resolve_branch(fix_sha, branch, fix_sha[:8])
-        if status in ("clean", "ready"):
-            ready[branch] = detail
+        if status == "clean":
+            clean_skipped.append(branch)
+        elif status == "ready":
+            resolved[branch] = detail
         elif status == "blocked":
             blocked[branch] = detail
         else:
@@ -308,22 +320,28 @@ def cmd_resolve(args) -> int:
             print(f"  !! {branch}: {detail}")
 
     print("\n" + "=" * 60)
-    print(f"Ready to PR : {', '.join(ready) or '-'}")
+    if clean_skipped:
+        print(f"Clean (no conflict, handled by ci/apply): {', '.join(clean_skipped)}")
+    print(f"Resolved & ready to PR: {', '.join(resolved) or '-'}")
     if blocked:
         print(f"Unfinished  : {', '.join(blocked)} (worktrees kept)")
     if errors:
         print(f"Errors      : {', '.join(errors)}")
 
-    if not ready:
-        print("\nNothing ready to open PRs for.")
+    if not resolved:
+        print("\nNo conflicts were resolved; nothing to open PRs for.")
         return 0
 
-    if not _ask_yn(f"\nCreate PRs for {len(ready)} branch(es) ({', '.join(ready)})?"):
-        print("Skipped PR creation. Local branches kept: " + ", ".join(ready.values()))
+    if not _ask_yn(
+        f"\nCreate PRs for {len(resolved)} resolved branch(es) ({', '.join(resolved)})?"
+    ):
+        print(
+            "Skipped PR creation. Local branches kept: " + ", ".join(resolved.values())
+        )
         return 0
 
     print()
-    for branch, local_branch in ready.items():
+    for branch, local_branch in resolved.items():
         url = _open_pr(branch, local_branch, fix_sha, subject, args.pr, args.remote)
         if url.startswith("error:"):
             print(f"  !! {branch}: {url}")
