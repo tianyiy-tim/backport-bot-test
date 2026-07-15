@@ -36,8 +36,7 @@ def _run_cherry_picks(
             clean.append(branch)
         elif status == "conflict":
             files = ", ".join(f"{c['path']} ({c['kind']})" for c in conflicts)
-            print(f"  [!!] {branch}  ->  conflicts in {files}")
-            print(f"         resolve on branch: {detail}")
+            print(f"  [!!] {branch}  ->  merge conflict in {files}")
             conflict.append(branch)
         else:
             print(f"  [??] {branch}  ->  error: {detail}")
@@ -125,10 +124,10 @@ def cmd_apply(args) -> int:
 
     if conflict:
         print(
-            "\nConflict branches were left with the fix applied + conflict markers. "
-            "Resolve one with:\n"
-            "  git checkout backport/<branch>/" + fix_sha[:8] + "\n"
-            "  # fix the <<<<<<< markers, then: git add -A && git commit"
+            "\nConflicting branches were NOT modified (the cherry-pick was aborted; "
+            "no conflict markers were committed). Resolve them interactively with:\n"
+            "  backport resolve --commit " + fix_sha[:12] + "\n"
+            "which walks each conflicted file (Y/N) and opens one PR per branch."
         )
     print(
         "\nNothing was pushed or merged. Inspect `git branch --list 'backport/*'`, "

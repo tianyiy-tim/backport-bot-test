@@ -25,7 +25,16 @@ Subcommands:
 
   ci --commit <sha>   Post-merge automation (GitHub Actions): analyze a merged
                       commit and open a backport PR on the fork for every
-                      AFFECTED branch. Fork remotes only.
+                      AFFECTED branch. Clean cherry-picks become PRs; conflicts
+                      are only reported (resolve them with `resolve`). Fork
+                      remotes only.
+
+  resolve [--pr N | --commit <sha>]
+                      Interactive, local conflict resolution: for every AFFECTED
+                      branch that conflicts, walk the conflicted files one by one
+                      (Y/N) in a real worktree you edit, with git rerere on so a
+                      resolution is reused across sibling branches. When done,
+                      optionally open one normal PR per branch. Fork remotes only.
 
   clear               Remove the saved run state.
 
@@ -35,8 +44,8 @@ lives in. It must have the release branches fetched (origin/fips-*, origin/main)
 
 Module map: main (this file) dispatches; gitutil = git plumbing + repo targeting;
 patches = patch->commit + source resolution; runstate = analyze->apply cache;
-verdicts = deterministic bucketing + AI passes; render = output; analyze/apply/ci
-= the commands; engine + ai = the impact core.
+verdicts = deterministic bucketing + AI passes; render = output; analyze/apply/ci/
+resolve = the commands; engine + ai = the impact core.
 """
 
 import argparse
@@ -48,6 +57,7 @@ from apply import cmd_apply, cmd_clear
 from ci import cmd_ci
 from common import BackportError
 from gitutil import resolve_patch_path, target_repo
+from resolve import cmd_resolve
 
 
 # --------------------------------------------------------------------------
@@ -157,6 +167,27 @@ def _add_ci(sub) -> None:
     p.set_defaults(func=cmd_ci, json=False)
 
 
+def _add_resolve(sub) -> None:
+    p = sub.add_parser(
+        "resolve",
+        help="interactively resolve backport conflicts locally, one PR per branch",
+    )
+    p.add_argument("--commit", help="fix commit SHA to backport")
+    p.add_argument("--pr", help="source PR number to backport (resolved via gh)")
+    p.add_argument(
+        "--remote",
+        default="origin",
+        help="fork remote to push branches / open PRs on (default origin)",
+    )
+    p.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="deterministic only; do not consult the AI (default: AI on)",
+    )
+    _add_common(p)
+    p.set_defaults(func=cmd_resolve, json=False)
+
+
 def _add_clear(sub) -> None:
     p = sub.add_parser(
         "clear",
@@ -176,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_analyze(sub)
     _add_apply(sub)
     _add_ci(sub)
+    _add_resolve(sub)
     _add_clear(sub)
     return ap
 

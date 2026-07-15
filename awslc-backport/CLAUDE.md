@@ -24,9 +24,12 @@ and `testing/` sit at the tool root.
 - `src/main.py` — entrypoint: the argument parser and subcommand dispatch, plus the
   top-level `BackportError` handler. Also `backport`, a shell wrapper.
 - `gitutil.py` — everything that shells out to git: `run`/`git`, throwaway
-  `temp_worktree`, the `cherry_pick_local` primitive (shared by apply + ci), the
-  two `git diff-tree` parsers, and repo targeting (`resolve_repo_path` /
-  `target_repo` / `resolve_patch_path`).
+  `temp_worktree` + persistent `add_worktree`/`remove_worktree`, the
+  `cherry_pick_local` primitive (shared by apply + ci; aborts on conflict), the
+  `resolve`-flow helpers (`unmerged_files`, `file_has_conflict_markers`,
+  `enable_rerere`), `resolve_commit` (commit-ish -> fix_sha/subject, merge-commit
+  aware), the two `git diff-tree` parsers, and repo targeting (`resolve_repo_path`
+  / `target_repo` / `resolve_patch_path`).
 - `patches.py` — `commit_from_patch` (patch -> temp commit in a worktree),
   patch-source resolution (`read_patch` / `resolve_patch_and_base`), and the
   test-file confirmation prompt.
@@ -36,8 +39,8 @@ and `testing/` sit at the tool root.
   advisory AI passes (`resolve_unsure`, `review_suspect_affected`,
   `resolve_inconclusive`).
 - `render.py` — the analyze table, backport hint, and JSON output.
-- `analyze.py` / `apply.py` / `ci.py` — one file per command (`cmd_analyze`;
-  `cmd_apply` + `cmd_clear`; `cmd_ci`).
+- `analyze.py` / `apply.py` / `ci.py` / `resolve.py` — one file per command
+  (`cmd_analyze`; `cmd_apply` + `cmd_clear`; `cmd_ci`; `cmd_resolve`).
 - `common.py` — shared leaf module: the verdict constants (`AFFECTED` …, `LABEL`)
   and the `BackportError` type everyone can import without a cycle.
 - `engine.py` — deterministic core. Repo targeting (`set_repo_path` / `REPO_PATH`
@@ -48,8 +51,30 @@ and `testing/` sit at the tool root.
   the `anthropic` SDK; degrades to `None` with no SDK/credentials.
 
 Import DAG (no cycles): `common` <- `gitutil` <- {`patches`, `verdicts`} <-
-{`analyze`, `apply`, `ci`} <- `main`; `render` <- `common`; `engine`/`ai` are the
+{`analyze`, `apply`, `ci`} <- `main`; `resolve` <- {`ci`, `gitutil`, `patches`,
+`verdicts`, `render`} <- `main`; `render` <- `common`; `engine`/`ai` are the
 leaf impact core.
+
+## Conflict handling: `ci` reports, `resolve` fixes
+
+Cherry-picks are attempted in throwaway worktrees. A **clean** pick lands on a
+local `backport/<branch>/<id>` branch; `ci` pushes it and opens a normal PR. A
+**conflicting** pick is `git cherry-pick --abort`ed — `cherry_pick_local` returns
+`("conflict", None, [{path, kind}, ...])`, leaving nothing behind (no
+committed-markers branch, no draft PR). `ci` only *reports* conflicts (the summary
+cell lists the clashing files and points at `resolve`); `apply` reports them too.
+
+`resolve` (`resolve.py`) is the interactive fixer. It buckets like `ci`, then for
+each AFFECTED branch checks it out in a **persistent** `add_worktree`, runs the
+cherry-pick live, and on conflict walks `unmerged_files` one at a time, prompting
+Y/N per file. On Y it re-checks `file_has_conflict_markers` and refuses to stage
+(re-prompts) if markers remain; `git add`ing a file drops it from the unmerged set
+so the loop advances. When all files are staged it runs `cherry-pick --continue`,
+creates the local branch, removes the worktree, and (after a final Y/N) opens one
+non-draft PR per branch. `git rerere` is enabled (`enable_rerere`, autoupdate
+**off** on purpose) so a resolution recorded on one branch auto-applies to a twin
+branch's identical conflict but still surfaces marker-free for the user to verify.
+Unfinished branches leave their worktree in place and are not PR'd.
 
 ## Bucketing (`verdicts.bucket_branches`)
 

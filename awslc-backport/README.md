@@ -26,6 +26,7 @@ awslc-backport/
     analyze.py      The `analyze` command.
     apply.py        The `apply` and `clear` commands.
     ci.py           The `ci` command (post-merge PR automation).
+    resolve.py      The `resolve` command (interactive local conflict fixing).
     engine.py       Deterministic core: branch resolution, impact analysis
                     (is_branch_affected, vulnerable_preimage_present), git helpers.
     ai.py           Advisory AI auditor / tie-breaker (never changes a verdict alone).
@@ -55,6 +56,9 @@ git -C <aws-lc> diff > fix.patch
 
 # cherry-pick onto local backport branches (no push, no PR):
 ./backport apply --all-affected --repo <aws-lc>
+
+# interactively resolve any conflicts and open one PR per affected branch:
+./backport resolve --pr <number> --repo <aws-lc>     # or --commit <sha>
 ```
 
 (`./backport` is the wrapper; equivalently `python3 src/main.py <cmd>`.)
@@ -64,8 +68,10 @@ git -C <aws-lc> diff > fix.patch
 The `ci` subcommand is the automated, post-merge counterpart to the local flow:
 given a **merged** commit it analyzes every supported branch (AI layer on) and
 opens a backport PR for each AFFECTED branch. Clean cherry-picks become PRs into
-the release branch (**never auto-merged**); conflicts are reported back on the
-source PR for manual handling.
+the release branch (**never auto-merged**). Conflicting branches are **reported
+only** — the summary lists the clashing files per branch and points to `resolve`;
+nothing is modified and no draft PR is opened (an in-progress conflict can only be
+resolved live, not from a committed-markers branch).
 
 ```bash
 # what CI runs (open PRs on the fork for a merged commit):
@@ -75,6 +81,33 @@ source PR for manual handling.
 
 Safety: `ci` **refuses to run against upstream `aws/aws-lc`** — it only ever
 pushes branches and opens PRs on a fork (`--remote`, default `origin`).
+
+## Resolving conflicts (`resolve`)
+
+When `ci` (or `apply`) reports a conflict, `resolve` fixes it locally with a
+human in the loop. Given a fix (`--pr <number>` or `--commit <sha>`) it finds the
+AFFECTED branches and, for each one that conflicts, checks it out in a real `git
+worktree` and walks you through the conflicted files **one at a time**:
+
+```
+crypto/fipsmodule/dh/dh.c requires conflict resolution, has the conflict been resolved? [Y/N]
+```
+
+Edit the file in the printed worktree path, answer `Y`, and it re-scans for
+leftover `<<<<<<<` / `>>>>>>>` markers (refusing to stage a half-fixed file) before
+moving to the next file, then the next branch. `git rerere` is enabled, so a
+resolution recorded on one branch is auto-applied to identical conflicts on
+sibling branches (e.g. the FIPS twins) — you still confirm each one. When every
+branch is ready it asks whether to open PRs, then pushes and opens **one normal
+(non-draft) PR per branch**, titled `[backport <branch>] <fix subject>`.
+
+```bash
+./backport resolve --pr 3337 --repo <aws-lc>
+./backport resolve --commit <sha> --no-ai --repo <aws-lc>
+```
+
+Like `ci`, `resolve` targets a fork only. It is interactive, so run it in a
+terminal (not a pipe/CI).
 
 To wire it up, copy `backport-bot.yml` into the fork's `.github/workflows/`. It
 triggers when a PR is merged carrying the `needs-backport` label, and needs a

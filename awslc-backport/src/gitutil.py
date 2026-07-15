@@ -81,39 +81,40 @@ def temp_worktree(base: str, prefix: str = "backport-") -> "Iterator[str]":
         git("worktree", "prune", check=False)
 
 
+def add_worktree(ref: str, prefix: str = "backport-resolve-") -> str:
+    """Create a *persistent* detached worktree checked out at *ref* and return its
+    path.
+
+    Unlike :func:`temp_worktree` this is NOT auto-removed -- the interactive
+    ``resolve`` flow hands the path to the user so they can edit the conflicted
+    files there, then calls :func:`remove_worktree` once the branch is done.
+    """
+    scratch_dir = tempfile.mkdtemp(prefix=prefix)
+    worktree = os.path.join(scratch_dir, "wt")
+    git("worktree", "add", "--detach", "--quiet", worktree, ref)
+    return worktree
+
+
+def remove_worktree(path: str) -> None:
+    """Remove a worktree created by :func:`add_worktree` and its temp parent dir."""
+    git("worktree", "remove", "--force", path, check=False)
+    shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+    git("worktree", "prune", check=False)
+
+
 # --------------------------------------------------------------------------
 # Cherry-pick primitive (shared by `apply` and `ci`)
 # --------------------------------------------------------------------------
 
 
-def _conflict_preview(wt: str, path: str, max_lines: int = 40) -> str:
-    """Return the ``<<<<<<< … >>>>>>>`` marker blocks from a conflicted file,
-    truncated to *max_lines*. Empty string if the file has no markers (e.g. a
-    modify/delete, where nothing is left to show)."""
-    try:
-        with open(os.path.join(wt, path), errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return ""
-    blocks, cur = [], None
-    for ln in lines:
-        if ln.startswith("<<<<<<<"):
-            cur = [ln]
-        elif cur is not None:
-            cur.append(ln)
-            if ln.startswith(">>>>>>>"):
-                blocks.append("\n".join(cur))
-                cur = None
-    preview = "\n...\n".join(blocks).splitlines()
-    if len(preview) > max_lines:
-        preview = preview[:max_lines] + ["... (truncated)"]
-    return "\n".join(preview)
+def unmerged_files(wt: str) -> List[dict]:
+    """List the still-unmerged files in *wt* (a conflicted cherry-pick), each as
+    ``{"path", "kind"}`` where *kind* is content conflict / modify/delete / add/add.
 
-
-def _conflicted_files(wt: str) -> List[dict]:
-    """List the unmerged files after a conflicted cherry-pick, each as a dict with
-    ``path``, ``kind`` (content conflict / modify/delete / add/add), and ``preview``
-    (the conflict-marker blocks, empty for modify/delete). Call before staging."""
+    Uses ``git status --porcelain`` (the U/AA/DD codes). Call before staging, and
+    re-call after each ``git add`` to see what remains -- this is how ``resolve``
+    walks the files one at a time.
+    """
     out = git("status", "--porcelain", cwd=wt).stdout
     files: List[dict] = []
     for line in out.splitlines():
@@ -124,23 +125,74 @@ def _conflicted_files(wt: str) -> List[dict]:
                 if xy == "UU"
                 else "modify/delete" if "D" in xy else "add/add" if xy == "AA" else xy
             )
-            files.append(
-                {"path": path, "kind": kind, "preview": _conflict_preview(wt, path)}
-            )
+            files.append({"path": path, "kind": kind})
     return files
+
+
+def file_has_conflict_markers(path: str) -> bool:
+    """True if *path* still contains git conflict markers.
+
+    ``resolve`` calls this before staging a file the user *claims* is resolved, so
+    a half-edited file with leftover markers is never committed.
+    """
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("<<<<<<<") or line.startswith(">>>>>>>"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def enable_rerere() -> None:
+    """Turn on git rerere ("reuse recorded resolution") for this repo.
+
+    With rerere on, resolving a conflict once records the resolution; an identical
+    conflict later (e.g. on a FIPS twin branch) is auto-applied to the working
+    tree. autoupdate is deliberately left OFF: the auto-applied file stays
+    *unmerged* (marker-free) so ``resolve`` can still surface it for the user to
+    verify before it is staged, rather than silently committing it.
+    """
+    git("config", "rerere.enabled", "true", check=False)
+
+
+def resolve_commit(commit_ish: str) -> "Tuple[str, str]":
+    """Resolve *commit_ish* to ``(fix_sha, subject)``.
+
+    A merge commit's own diff-tree is empty (the real change is on the merged-in
+    side), so when handed one we transparently re-point to its second parent (the
+    PR head) and print a note. Squash/normal single-parent commits pass through
+    unchanged. Raises :class:`BackportError` if the commit is not in the checkout.
+    """
+    fix = git("rev-parse", "--verify", f"{commit_ish}^{{commit}}", check=False)
+    if fix.returncode != 0:
+        raise BackportError(f"commit '{commit_ish}' not found in the checkout.")
+    fix_sha = fix.stdout.strip()
+    parents = git("rev-list", "--parents", "-n", "1", fix_sha).stdout.split()
+    if len(parents) > 2:  # sha + 2+ parent shas => merge commit
+        merged_head = git("rev-parse", f"{fix_sha}^2").stdout.strip()
+        print(
+            f"note: {fix_sha[:10]} is a merge commit; analyzing the merged-in "
+            f"commit {merged_head[:10]} instead."
+        )
+        fix_sha = merged_head
+    subject = git("log", "-1", "--format=%s", fix_sha).stdout.strip()
+    return fix_sha, subject
 
 
 def cherry_pick_local(
     fix_sha: str, branch: str, run_id: str
-) -> "Tuple[str, str, List[dict]]":
+) -> "Tuple[str, Optional[str], List[dict]]":
     """Cherry-pick *fix_sha* onto ``origin/<branch>`` in a throwaway worktree.
 
     Returns ``(status, detail, conflicts)``:
-      - ``("clean", local_branch, [])`` -- applied cleanly; branch created.
-      - ``("conflict", local_branch, [{path, kind, preview}, ...])`` -- the
-        half-applied state (clean files applied, conflict markers left in the
-        clashing ones) is committed as a WIP commit on
-        ``backport/<branch>/<run_id>`` so the user has a branch to resolve.
+      - ``("clean", local_branch, [])`` -- applied cleanly; the local branch
+        ``backport/<branch>/<run_id>`` is created.
+      - ``("conflict", None, [{path, kind}, ...])`` -- the pick conflicts; the
+        attempt is ABORTED. Nothing is committed and no branch is left behind
+        (no more half-applied conflict-marker branches). Use the interactive
+        ``resolve`` command to fix the conflicts live in a worktree.
       - ``("error", message, [])`` -- the branch/ref was missing or git failed.
 
     Never pushes or opens a PR.
@@ -152,29 +204,13 @@ def cherry_pick_local(
     try:
         with temp_worktree(ref, prefix="backport-cp-") as wt:
             pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
-            conflicts: List[dict] = []
             if pick.returncode != 0:
-                # Keep the conflicted result instead of aborting: stage everything
-                # (clean hunks + files with <<<<<<< markers) and commit it, so the
-                # branch is a ready-to-resolve starting point.
-                conflicts = _conflicted_files(wt)
-                git("add", "-A", cwd=wt)
-                git(
-                    "-c",
-                    "user.name=backport-cli",
-                    "-c",
-                    "user.email=backport-cli@local",
-                    "commit",
-                    "--no-verify",
-                    "--quiet",
-                    "-m",
-                    f"WIP backport of {fix_sha[:10]} onto {branch} "
-                    "(unresolved conflicts)",
-                    cwd=wt,
-                )
+                conflicts = unmerged_files(wt)
+                git("cherry-pick", "--abort", check=False, cwd=wt)
+                return "conflict", None, conflicts
             new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
             git("branch", "-f", local_branch, new_sha)
-            return ("conflict" if conflicts else "clean"), local_branch, conflicts
+            return "clean", local_branch, []
     except BackportError as exc:
         return "error", str(exc), []
 
