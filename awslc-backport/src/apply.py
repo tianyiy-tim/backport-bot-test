@@ -35,7 +35,8 @@ def _run_cherry_picks(
             print(f"  [OK] {branch}  ->  {detail}")
             clean.append(branch)
         elif status == "conflict":
-            print(f"  [!!] {branch}  ->  conflicts in {', '.join(conflicts)}")
+            files = ", ".join(f"{p} ({k})" for p, k in conflicts)
+            print(f"  [!!] {branch}  ->  conflicts in {files}")
             print(f"         resolve on branch: {detail}")
             conflict.append(branch)
         else:

@@ -45,6 +45,14 @@ def _assert_fork_remote(remote: str) -> None:
 # --------------------------------------------------------------------------
 
 
+def _test_only(conflicts) -> bool:
+    """True if every conflicting path is a test/generated file (not real source),
+    which usually means the source fix applied cleanly and only a test hunk clashed."""
+    return bool(conflicts) and all(
+        bot._is_test_or_generated_file(path) for path, _ in conflicts
+    )
+
+
 def _open_backport_pr(
     branch: str,
     local_branch: str,
@@ -64,10 +72,18 @@ def _open_backport_pr(
     link = f" of #{source_pr}" if source_pr else ""
     if conflicts:
         title = f"[backport {branch}] {subject} — CONFLICT, needs manual resolution"
-        files_md = "\n".join(f"- `{c}`" for c in conflicts)
+        files_md = "\n".join(f"- `{path}` ({kind})" for path, kind in conflicts)
+        test_note = ""
+        if _test_only(conflicts):
+            test_note = (
+                "\n> ℹ️ **Only test/generated files conflict** — the source fix "
+                "applied cleanly. This is usually trivial: drop the test hunk or "
+                "port it to this branch's test file.\n"
+            )
         body = (
             f"⚠️ **Automated backport{link} (`{fix_sha[:12]}`) hit conflicts on "
-            f"`{branch}` — needs manual resolution.**\n\n"
+            f"`{branch}` — needs manual resolution.**\n"
+            f"{test_note}\n"
             "The fix is applied on this branch except for the files below, which "
             "still contain `<<<<<<<` / `>>>>>>>` conflict markers:\n\n"
             f"{files_md}\n\n"
@@ -124,6 +140,8 @@ def _backport_cell(state: str, outcome) -> str:
     if kind == "error":
         return f"⚠️ {value}"
     num = value.rstrip("/").rsplit("/", 1)[-1]
+    if kind == "conflict_test":
+        return f"⚠️ [draft #{num}]({value}) — test file only, likely trivial"
     if kind == "conflict":
         return f"⚠️ [draft #{num}]({value}) — needs manual resolution"
     return f"✅ [#{num}]({value})"
@@ -138,7 +156,9 @@ def _summary_table(fix_sha: str, subject: str, buckets, outcomes) -> str:
         return (outcomes.get(b) or (None, None))[0]
 
     opened = sum(1 for b in buckets if kind_of(b) == "opened")
-    manual = sum(1 for b in buckets if kind_of(b) in ("conflict", "error"))
+    manual = sum(
+        1 for b in buckets if kind_of(b) in ("conflict", "conflict_test", "error")
+    )
     not_aff = sum(1 for s in buckets.values() if s == NOT_AFFECTED)
     already = sum(1 for s in buckets.values() if s == ALREADY)
 
@@ -172,7 +192,7 @@ def _ci_report(args, fix_sha, subject, buckets, outcomes) -> None:
     if args.pr and not args.dry_run:
         _gh("pr", "comment", str(args.pr), "--body", table, check=False)
     for branch, outcome in outcomes.items():
-        if outcome[0] in ("conflict", "error"):
+        if outcome[0] in ("conflict", "conflict_test", "error"):
             print(f"::warning::backport to {branch} needs manual resolution")
 
 
@@ -247,8 +267,10 @@ def cmd_ci(args) -> int:
         elif url == "dry-run":
             outcomes[branch] = ("dry-run", None)
         elif conflicts:
-            outcomes[branch] = ("conflict", url)
-            print(f"  [!!] {branch}: draft PR (conflict) {url}")
+            kind = "conflict_test" if _test_only(conflicts) else "conflict"
+            outcomes[branch] = (kind, url)
+            tag = "conflict/test" if kind == "conflict_test" else "conflict"
+            print(f"  [!!] {branch}: draft PR ({tag}) {url}")
         else:
             outcomes[branch] = ("opened", url)
             print(f"  [OK] {branch}: {url}")

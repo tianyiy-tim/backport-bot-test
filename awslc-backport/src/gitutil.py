@@ -86,12 +86,12 @@ def temp_worktree(base: str, prefix: str = "backport-") -> "Iterator[str]":
 # --------------------------------------------------------------------------
 
 
-def _conflicted_files(wt: str) -> List[str]:
-    """List the unmerged files after a conflicted cherry-pick, each tagged with a
-    short kind (content conflict / modify-delete / add-add) so the user knows what
-    they're walking into. Must be called before the tree is staged."""
+def _conflicted_files(wt: str) -> List[Tuple[str, str]]:
+    """List the unmerged files after a conflicted cherry-pick as ``(path, kind)``
+    tuples (kind = content conflict / modify/delete / add/add), so callers can
+    both display them and reason about the paths. Call before staging the tree."""
     out = git("status", "--porcelain", cwd=wt).stdout
-    files: List[str] = []
+    files: List[Tuple[str, str]] = []
     for line in out.splitlines():
         xy, path = line[:2], line[3:].strip()
         if "U" in xy or xy in ("AA", "DD"):
@@ -100,21 +100,21 @@ def _conflicted_files(wt: str) -> List[str]:
                 if xy == "UU"
                 else "modify/delete" if "D" in xy else "add/add" if xy == "AA" else xy
             )
-            files.append(f"{path} ({kind})")
+            files.append((path, kind))
     return files
 
 
 def cherry_pick_local(
     fix_sha: str, branch: str, run_id: str
-) -> "Tuple[str, str, List[str]]":
+) -> "Tuple[str, str, List[Tuple[str, str]]]":
     """Cherry-pick *fix_sha* onto ``origin/<branch>`` in a throwaway worktree.
 
     Returns ``(status, detail, conflicts)``:
       - ``("clean", local_branch, [])`` -- applied cleanly; branch created.
-      - ``("conflict", local_branch, [files])`` -- the half-applied state (clean
-        files applied, conflict markers left in the clashing ones) is committed as
-        a WIP commit on ``backport/<branch>/<run_id>`` so the user has a branch to
-        resolve rather than nothing. *conflicts* tags each unmerged file.
+      - ``("conflict", local_branch, [(path, kind), ...])`` -- the half-applied
+        state (clean files applied, conflict markers left in the clashing ones) is
+        committed as a WIP commit on ``backport/<branch>/<run_id>`` so the user has
+        a branch to resolve rather than nothing.
       - ``("error", message, [])`` -- the branch/ref was missing or git failed.
 
     Never pushes or opens a PR.
@@ -126,7 +126,7 @@ def cherry_pick_local(
     try:
         with temp_worktree(ref, prefix="backport-cp-") as wt:
             pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
-            conflicts: List[str] = []
+            conflicts: List[Tuple[str, str]] = []
             if pick.returncode != 0:
                 # Keep the conflicted result instead of aborting: stage everything
                 # (clean hunks + files with <<<<<<< markers) and commit it, so the
