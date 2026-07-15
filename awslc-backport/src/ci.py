@@ -133,6 +133,19 @@ def cmd_ci(args) -> int:
     if fix.returncode != 0:
         raise BackportError(f"commit '{args.commit}' not found in the checkout.")
     fix_sha = fix.stdout.strip()
+    # If we were handed a merge commit (a PR merged with a merge commit instead of
+    # squashed), its own diff-tree is empty -- the real change is on the merged-in
+    # side. Re-point to the second parent (the PR head). Squash/normal commits have
+    # a single parent and are unaffected. AWS-LC squash-merges, so this is mainly a
+    # guard for forks / repos that use merge commits.
+    parents = git("rev-list", "--parents", "-n", "1", fix_sha).stdout.split()
+    if len(parents) > 2:  # sha + 2+ parent shas => merge commit
+        merged_head = git("rev-parse", f"{fix_sha}^2").stdout.strip()
+        print(
+            f"note: {fix_sha[:10]} is a merge commit; analyzing the merged-in "
+            f"commit {merged_head[:10]} instead."
+        )
+        fix_sha = merged_head
     subject = git("log", "-1", "--format=%s", fix_sha).stdout.strip()
 
     branches = bot.sort_branches(bot.get_supported_branches())
