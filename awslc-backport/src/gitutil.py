@@ -86,12 +86,36 @@ def temp_worktree(base: str, prefix: str = "backport-") -> "Iterator[str]":
 # --------------------------------------------------------------------------
 
 
-def _conflicted_files(wt: str) -> List[Tuple[str, str]]:
-    """List the unmerged files after a conflicted cherry-pick as ``(path, kind)``
-    tuples (kind = content conflict / modify/delete / add/add), so callers can
-    both display them and reason about the paths. Call before staging the tree."""
+def _conflict_preview(wt: str, path: str, max_lines: int = 40) -> str:
+    """Return the ``<<<<<<< … >>>>>>>`` marker blocks from a conflicted file,
+    truncated to *max_lines*. Empty string if the file has no markers (e.g. a
+    modify/delete, where nothing is left to show)."""
+    try:
+        with open(os.path.join(wt, path), errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    blocks, cur = [], None
+    for ln in lines:
+        if ln.startswith("<<<<<<<"):
+            cur = [ln]
+        elif cur is not None:
+            cur.append(ln)
+            if ln.startswith(">>>>>>>"):
+                blocks.append("\n".join(cur))
+                cur = None
+    preview = "\n...\n".join(blocks).splitlines()
+    if len(preview) > max_lines:
+        preview = preview[:max_lines] + ["... (truncated)"]
+    return "\n".join(preview)
+
+
+def _conflicted_files(wt: str) -> List[dict]:
+    """List the unmerged files after a conflicted cherry-pick, each as a dict with
+    ``path``, ``kind`` (content conflict / modify/delete / add/add), and ``preview``
+    (the conflict-marker blocks, empty for modify/delete). Call before staging."""
     out = git("status", "--porcelain", cwd=wt).stdout
-    files: List[Tuple[str, str]] = []
+    files: List[dict] = []
     for line in out.splitlines():
         xy, path = line[:2], line[3:].strip()
         if "U" in xy or xy in ("AA", "DD"):
@@ -100,21 +124,23 @@ def _conflicted_files(wt: str) -> List[Tuple[str, str]]:
                 if xy == "UU"
                 else "modify/delete" if "D" in xy else "add/add" if xy == "AA" else xy
             )
-            files.append((path, kind))
+            files.append(
+                {"path": path, "kind": kind, "preview": _conflict_preview(wt, path)}
+            )
     return files
 
 
 def cherry_pick_local(
     fix_sha: str, branch: str, run_id: str
-) -> "Tuple[str, str, List[Tuple[str, str]]]":
+) -> "Tuple[str, str, List[dict]]":
     """Cherry-pick *fix_sha* onto ``origin/<branch>`` in a throwaway worktree.
 
     Returns ``(status, detail, conflicts)``:
       - ``("clean", local_branch, [])`` -- applied cleanly; branch created.
-      - ``("conflict", local_branch, [(path, kind), ...])`` -- the half-applied
-        state (clean files applied, conflict markers left in the clashing ones) is
-        committed as a WIP commit on ``backport/<branch>/<run_id>`` so the user has
-        a branch to resolve rather than nothing.
+      - ``("conflict", local_branch, [{path, kind, preview}, ...])`` -- the
+        half-applied state (clean files applied, conflict markers left in the
+        clashing ones) is committed as a WIP commit on
+        ``backport/<branch>/<run_id>`` so the user has a branch to resolve.
       - ``("error", message, [])`` -- the branch/ref was missing or git failed.
 
     Never pushes or opens a PR.
@@ -126,7 +152,7 @@ def cherry_pick_local(
     try:
         with temp_worktree(ref, prefix="backport-cp-") as wt:
             pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
-            conflicts: List[Tuple[str, str]] = []
+            conflicts: List[dict] = []
             if pick.returncode != 0:
                 # Keep the conflicted result instead of aborting: stage everything
                 # (clean hunks + files with <<<<<<< markers) and commit it, so the

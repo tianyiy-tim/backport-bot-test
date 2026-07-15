@@ -49,7 +49,7 @@ def _test_only(conflicts) -> bool:
     """True if every conflicting path is a test/generated file (not real source),
     which usually means the source fix applied cleanly and only a test hunk clashed."""
     return bool(conflicts) and all(
-        bot._is_test_or_generated_file(path) for path, _ in conflicts
+        bot._is_test_or_generated_file(c["path"]) for c in conflicts
     )
 
 
@@ -72,7 +72,7 @@ def _open_backport_pr(
     link = f" of #{source_pr}" if source_pr else ""
     if conflicts:
         title = f"[backport {branch}] {subject} — CONFLICT, needs manual resolution"
-        files_md = "\n".join(f"- `{path}` ({kind})" for path, kind in conflicts)
+        files_md = "\n".join(f"- `{c['path']}` ({c['kind']})" for c in conflicts)
         test_note = ""
         if _test_only(conflicts):
             test_note = (
@@ -80,13 +80,26 @@ def _open_backport_pr(
                 "applied cleanly. This is usually trivial: drop the test hunk or "
                 "port it to this branch's test file.\n"
             )
+        # Inline preview of the actual conflict hunks, so a reviewer sees the clash
+        # without checking the branch out.
+        previews = [c for c in conflicts if c.get("preview")]
+        preview_md = ""
+        if previews:
+            blocks = "\n\n".join(
+                f"`{c['path']}`:\n```\n{c['preview']}\n```" for c in previews
+            )
+            preview_md = (
+                "\n<details><summary>Conflict preview</summary>\n\n"
+                f"{blocks}\n</details>\n"
+            )
         body = (
             f"⚠️ **Automated backport{link} (`{fix_sha[:12]}`) hit conflicts on "
             f"`{branch}` — needs manual resolution.**\n"
             f"{test_note}\n"
             "The fix is applied on this branch except for the files below, which "
             "still contain `<<<<<<<` / `>>>>>>>` conflict markers:\n\n"
-            f"{files_md}\n\n"
+            f"{files_md}\n"
+            f"{preview_md}\n"
             "**To resolve:**\n"
             "```sh\n"
             "gh pr checkout <this-pr-number>\n"
