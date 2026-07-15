@@ -86,33 +86,71 @@ def temp_worktree(base: str, prefix: str = "backport-") -> "Iterator[str]":
 # --------------------------------------------------------------------------
 
 
-def cherry_pick_local(fix_sha: str, branch: str, run_id: str) -> "Tuple[str, str]":
+def _conflicted_files(wt: str) -> List[str]:
+    """List the unmerged files after a conflicted cherry-pick, each tagged with a
+    short kind (content conflict / modify-delete / add-add) so the user knows what
+    they're walking into. Must be called before the tree is staged."""
+    out = git("status", "--porcelain", cwd=wt).stdout
+    files: List[str] = []
+    for line in out.splitlines():
+        xy, path = line[:2], line[3:].strip()
+        if "U" in xy or xy in ("AA", "DD"):
+            kind = (
+                "content conflict"
+                if xy == "UU"
+                else "modify/delete" if "D" in xy else "add/add" if xy == "AA" else xy
+            )
+            files.append(f"{path} ({kind})")
+    return files
+
+
+def cherry_pick_local(
+    fix_sha: str, branch: str, run_id: str
+) -> "Tuple[str, str, List[str]]":
     """Cherry-pick *fix_sha* onto ``origin/<branch>`` in a throwaway worktree.
 
-    On a clean apply, create a local branch ``backport/<branch>/<run_id>`` at the
-    result and return ``("clean", branch_name)``. On conflict, abort and return
-    ``("conflict", first_conflict_line)``. Never pushes or opens a PR.
+    Returns ``(status, detail, conflicts)``:
+      - ``("clean", local_branch, [])`` -- applied cleanly; branch created.
+      - ``("conflict", local_branch, [files])`` -- the half-applied state (clean
+        files applied, conflict markers left in the clashing ones) is committed as
+        a WIP commit on ``backport/<branch>/<run_id>`` so the user has a branch to
+        resolve rather than nothing. *conflicts* tags each unmerged file.
+      - ``("error", message, [])`` -- the branch/ref was missing or git failed.
+
+    Never pushes or opens a PR.
     """
     ref = f"origin/{branch}"
     if not ref_exists(ref):
-        return "error", f"{ref} not found"
+        return "error", f"{ref} not found", []
+    local_branch = f"backport/{branch}/{run_id}"
     try:
         with temp_worktree(ref, prefix="backport-cp-") as wt:
             pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
-            if pick.returncode == 0:
-                new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
-                local_branch = f"backport/{branch}/{run_id}"
-                git("branch", "-f", local_branch, new_sha)
-                return "clean", local_branch
-            git("cherry-pick", "--abort", check=False, cwd=wt)
-            combined = pick.stdout + pick.stderr
-            first = next(
-                (ln for ln in combined.splitlines() if "conflict" in ln.lower()),
-                "conflict",
-            )
-            return "conflict", first.strip()
+            conflicts: List[str] = []
+            if pick.returncode != 0:
+                # Keep the conflicted result instead of aborting: stage everything
+                # (clean hunks + files with <<<<<<< markers) and commit it, so the
+                # branch is a ready-to-resolve starting point.
+                conflicts = _conflicted_files(wt)
+                git("add", "-A", cwd=wt)
+                git(
+                    "-c",
+                    "user.name=backport-cli",
+                    "-c",
+                    "user.email=backport-cli@local",
+                    "commit",
+                    "--no-verify",
+                    "--quiet",
+                    "-m",
+                    f"WIP backport of {fix_sha[:10]} onto {branch} "
+                    "(unresolved conflicts)",
+                    cwd=wt,
+                )
+            new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
+            git("branch", "-f", local_branch, new_sha)
+            return ("conflict" if conflicts else "clean"), local_branch, conflicts
     except BackportError as exc:
-        return "error", str(exc)
+        return "error", str(exc), []
 
 
 # --------------------------------------------------------------------------

@@ -30,12 +30,13 @@ def _run_cherry_picks(
     conflict: List[str] = []
     errors: List[str] = []
     for branch in targets:
-        status, detail = cherry_pick_local(fix_sha, branch, run_id)
+        status, detail, conflicts = cherry_pick_local(fix_sha, branch, run_id)
         if status == "clean":
             print(f"  [OK] {branch}  ->  {detail}")
             clean.append(branch)
         elif status == "conflict":
-            print(f"  [!!] {branch}  ->  conflict: {detail}")
+            print(f"  [!!] {branch}  ->  conflicts in {', '.join(conflicts)}")
+            print(f"         resolve on branch: {detail}")
             conflict.append(branch)
         else:
             print(f"  [??] {branch}  ->  error: {detail}")
@@ -121,6 +122,13 @@ def cmd_apply(args) -> int:
 
     _cleanup_after_apply(args, run, conflict, errors)
 
+    if conflict:
+        print(
+            "\nConflict branches were left with the fix applied + conflict markers. "
+            "Resolve one with:\n"
+            "  git checkout backport/<branch>/" + fix_sha[:8] + "\n"
+            "  # fix the <<<<<<< markers, then: git add -A && git commit"
+        )
     print(
         "\nNothing was pushed or merged. Inspect `git branch --list 'backport/*'`, "
         "then push and open PRs for human review when ready."

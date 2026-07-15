@@ -54,19 +54,44 @@ def _open_backport_pr(
     remote: str,
     reason: str,
     dry_run: bool,
+    conflicts: Optional[list] = None,
 ) -> str:
-    """Push a clean cherry-pick branch to the fork and open a PR into the release
-    branch. Returns the PR URL, or ``"dry-run"``, or an ``"error: ..."`` string."""
-    title = f"[backport {branch}] {subject}"
+    """Push the cherry-pick branch to the fork and open a PR into the release
+    branch. A clean pick opens a normal PR; a conflicted one opens a **draft** PR
+    (the branch has the fix applied plus conflict markers) with resolution steps.
+    Returns the PR URL, ``"dry-run"``, or an ``"error: ..."`` string."""
+    conflicts = conflicts or []
     link = f" of #{source_pr}" if source_pr else ""
-    body = (
-        f"Automated backport{link} (`{fix_sha[:12]}`) onto `{branch}`.\n\n"
-        f"- Impact verdict: **AFFECTED** ({reason or 'deterministic'}).\n"
-        "- Clean cherry-pick; **not** auto-merged -- please review before merging.\n\n"
-        "_Opened by the AWS-LC backport bot._"
-    )
+    if conflicts:
+        title = f"[backport {branch}] {subject} — CONFLICT, needs manual resolution"
+        files_md = "\n".join(f"- `{c}`" for c in conflicts)
+        body = (
+            f"⚠️ **Automated backport{link} (`{fix_sha[:12]}`) hit conflicts on "
+            f"`{branch}` — needs manual resolution.**\n\n"
+            "The fix is applied on this branch except for the files below, which "
+            "still contain `<<<<<<<` / `>>>>>>>` conflict markers:\n\n"
+            f"{files_md}\n\n"
+            "**To resolve:**\n"
+            "```sh\n"
+            "gh pr checkout <this-pr-number>\n"
+            "# edit the files above to resolve the markers\n"
+            "git add -A && git commit && git push\n"
+            "```\n"
+            "Then mark this PR **Ready for review**. Nothing is auto-merged.\n\n"
+            "_Opened by the AWS-LC backport bot._"
+        )
+    else:
+        title = f"[backport {branch}] {subject}"
+        body = (
+            f"Automated backport{link} (`{fix_sha[:12]}`) onto `{branch}`.\n\n"
+            f"- Impact verdict: **AFFECTED** ({reason or 'deterministic'}).\n"
+            "- Clean cherry-pick; **not** auto-merged -- please review before "
+            "merging.\n\n"
+            "_Opened by the AWS-LC backport bot._"
+        )
     if dry_run:
-        print(f"    [dry-run] would push {local_branch} and open PR: {title}")
+        kind = "draft (conflict)" if conflicts else "PR"
+        print(f"    [dry-run] would push {local_branch} and open {kind}: {title}")
         return "dry-run"
     push = git(
         "push",
@@ -77,41 +102,31 @@ def _open_backport_pr(
     )
     if push.returncode != 0:
         return f"error: push failed: {(push.stderr or push.stdout).strip()}"
-    pr = _gh(
-        "pr",
-        "create",
-        "--base",
-        branch,
-        "--head",
-        local_branch,
-        "--title",
-        title,
-        "--body",
-        body,
-        check=False,
-    )
+    create = ["pr", "create", "--base", branch, "--head", local_branch]
+    create += ["--title", title, "--body", body]
+    if conflicts:
+        create.append("--draft")
+    pr = _gh(*create, check=False)
     if pr.returncode != 0:
         return f"error: gh pr create failed: {(pr.stderr or pr.stdout).strip()}"
     return pr.stdout.strip()
 
 
-def _backport_cell(state: str, outcome: Optional[str]) -> str:
-    """Render the 'Backport' column for one branch."""
+def _backport_cell(state: str, outcome) -> str:
+    """Render the 'Backport' column for one branch. *outcome* is (kind, value)."""
     if state == ALREADY:
         return "already applied"
-    if state != AFFECTED:
+    if state != AFFECTED or outcome is None:
         return "—"
-    if outcome is None:
-        return "—"
-    if outcome == "dry-run":
+    kind, value = outcome
+    if kind == "dry-run":
         return "would open PR (dry-run)"
-    if outcome == "conflict":
-        return "⚠️ conflict — needs manual backport"
-    if outcome.startswith("error"):
-        return f"⚠️ {outcome}"
-    # otherwise it's a PR URL
-    num = outcome.rstrip("/").rsplit("/", 1)[-1]
-    return f"✅ [#{num}]({outcome})"
+    if kind == "error":
+        return f"⚠️ {value}"
+    num = value.rstrip("/").rsplit("/", 1)[-1]
+    if kind == "conflict":
+        return f"⚠️ [draft #{num}]({value}) — needs manual resolution"
+    return f"✅ [#{num}]({value})"
 
 
 def _summary_table(fix_sha: str, subject: str, buckets, outcomes) -> str:
@@ -119,19 +134,11 @@ def _summary_table(fix_sha: str, subject: str, buckets, outcomes) -> str:
     order = {AFFECTED: 0, ALREADY: 1, NOT_AFFECTED: 2}
     rows = sorted(buckets.items(), key=lambda kv: order.get(kv[1], 9))
 
-    opened = sum(
-        1
-        for b, s in buckets.items()
-        if s == AFFECTED and (outcomes.get(b) or "").startswith("http")
-    )
-    manual = sum(
-        1
-        for b, s in buckets.items()
-        if s == AFFECTED
-        and (
-            outcomes.get(b) == "conflict" or (outcomes.get(b) or "").startswith("error")
-        )
-    )
+    def kind_of(b):
+        return (outcomes.get(b) or (None, None))[0]
+
+    opened = sum(1 for b in buckets if kind_of(b) == "opened")
+    manual = sum(1 for b in buckets if kind_of(b) in ("conflict", "error"))
     not_aff = sum(1 for s in buckets.values() if s == NOT_AFFECTED)
     already = sum(1 for s in buckets.values() if s == ALREADY)
 
@@ -164,9 +171,8 @@ def _ci_report(args, fix_sha, subject, buckets, outcomes) -> None:
     print("\n" + table)
     if args.pr and not args.dry_run:
         _gh("pr", "comment", str(args.pr), "--body", table, check=False)
-    for branch, state in buckets.items():
-        outcome = outcomes.get(branch) or ""
-        if state == AFFECTED and (outcome == "conflict" or outcome.startswith("error")):
+    for branch, outcome in outcomes.items():
+        if outcome[0] in ("conflict", "error"):
             print(f"::warning::backport to {branch} needs manual resolution")
 
 
@@ -216,15 +222,13 @@ def cmd_ci(args) -> int:
         print("\nNo AFFECTED branches; nothing to backport.")
         return 0
 
-    print(f"\nOpening backport PRs on '{args.remote}' for: {', '.join(targets)}\n")
+    print(f"\nBackporting to '{args.remote}' for: {', '.join(targets)}\n")
     outcomes = {}
     for branch in targets:
-        status, detail = cherry_pick_local(fix_sha, branch, fix_sha[:8])
-        if status != "clean":
-            outcomes[branch] = (
-                "conflict" if status == "conflict" else f"error: {detail}"
-            )
-            print(f"  [!!] {branch}: {status} ({detail}) -> manual backport needed")
+        status, detail, conflicts = cherry_pick_local(fix_sha, branch, fix_sha[:8])
+        if status == "error":
+            outcomes[branch] = ("error", detail)
+            print(f"  [??] {branch}: error: {detail}")
             continue
         url = _open_backport_pr(
             branch,
@@ -235,9 +239,19 @@ def cmd_ci(args) -> int:
             args.remote,
             decided_by.get(branch, ""),
             args.dry_run,
+            conflicts=conflicts,
         )
-        outcomes[branch] = url
-        print(f"  [{'??' if url.startswith('error:') else 'OK'}] {branch}: {url}")
+        if url.startswith("error:"):
+            outcomes[branch] = ("error", url)
+            print(f"  [??] {branch}: {url}")
+        elif url == "dry-run":
+            outcomes[branch] = ("dry-run", None)
+        elif conflicts:
+            outcomes[branch] = ("conflict", url)
+            print(f"  [!!] {branch}: draft PR (conflict) {url}")
+        else:
+            outcomes[branch] = ("opened", url)
+            print(f"  [OK] {branch}: {url}")
 
     _ci_report(args, fix_sha, subject, buckets, outcomes)
     return 0
