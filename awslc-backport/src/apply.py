@@ -36,12 +36,17 @@ def _run_cherry_picks(
     conflict: List[str] = []
     errors: List[str] = []
     for branch in targets:
-        status, detail, conflicts = cherry_pick_local(fix_sha, branch, run_id)
+        status, detail, extra = cherry_pick_local(fix_sha, branch, run_id)
         if status == "clean":
-            print(f"  [OK] {branch}  ->  {detail}")
+            note = (
+                f"  (dropped test-only hunk: {', '.join(c['path'] for c in extra)})"
+                if extra
+                else ""
+            )
+            print(f"  [OK] {branch}  ->  {detail}{note}")
             clean.append(branch)
         elif status == "conflict":
-            files = ", ".join(f"{c['path']} ({c['kind']})" for c in conflicts)
+            files = ", ".join(f"{c['path']} ({c['kind']})" for c in extra)
             print(f"  [!!] {branch}  ->  merge conflict in {files}")
             conflict.append(branch)
         else:

@@ -186,13 +186,16 @@ def cherry_pick_local(
 ) -> "Tuple[str, Optional[str], List[dict]]":
     """Cherry-pick *fix_sha* onto ``origin/<branch>`` in a throwaway worktree.
 
-    Returns ``(status, detail, conflicts)``:
-      - ``("clean", local_branch, [])`` -- applied cleanly; the local branch
-        ``backport/<branch>/<run_id>`` is created.
-      - ``("conflict", None, [{path, kind}, ...])`` -- the pick conflicts; the
-        attempt is ABORTED. Nothing is committed and no branch is left behind
-        (no more half-applied conflict-marker branches). Use the interactive
-        ``resolve`` command to fix the conflicts live in a worktree.
+    Returns ``(status, detail, extra)``:
+      - ``("clean", local_branch, dropped)`` -- applied; the local branch
+        ``backport/<branch>/<run_id>`` is created. *dropped* is normally ``[]``;
+        if the pick conflicted **only** in test/generated files, those hunks are
+        dropped (the branch keeps its own tests, the source fix applies) and the
+        pick is completed -- *dropped* then lists those files so the caller can
+        note them.
+      - ``("conflict", None, [{path, kind}, ...])`` -- a real (source) conflict;
+        the attempt is ABORTED. Nothing is committed and no branch is left behind.
+        Use the interactive ``resolve`` command to fix it live in a worktree.
       - ``("error", message, [])`` -- the branch/ref was missing or git failed.
 
     Never pushes or opens a PR.
@@ -204,15 +207,60 @@ def cherry_pick_local(
     try:
         with temp_worktree(ref, prefix="backport-cp-") as wt:
             pick = git("cherry-pick", fix_sha, check=False, cwd=wt)
+            dropped: List[dict] = []
             if pick.returncode != 0:
                 conflicts = unmerged_files(wt)
-                git("cherry-pick", "--abort", check=False, cwd=wt)
-                return "conflict", None, conflicts
+                # Test/generated-only conflict: the source fix applied cleanly and
+                # only a test/generated file clashed. Drop those hunks (keep the
+                # branch's version) and finish the pick, so a trivial test clash
+                # counts as a clean backport instead of manual resolution.
+                if (
+                    conflicts
+                    and all(
+                        bot._is_test_or_generated_file(c["path"]) for c in conflicts
+                    )
+                    and _drop_and_continue(wt, conflicts)
+                ):
+                    dropped = conflicts
+                else:
+                    git("cherry-pick", "--abort", check=False, cwd=wt)
+                    return "conflict", None, conflicts
             new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
             git("branch", "-f", local_branch, new_sha)
-            return "clean", local_branch, []
+            return "clean", local_branch, dropped
     except BackportError as exc:
         return "error", str(exc), []
+
+
+def _drop_and_continue(wt: str, conflicts: List[dict]) -> bool:
+    """Resolve a test/generated-only conflict by restoring the branch's version of
+    each conflicting file (dropping the fix's test churn), then completing the
+    cherry-pick. Returns True on success, False if it could not finish cleanly
+    (leaving the caller to abort and treat it as a real conflict)."""
+    for c in conflicts:
+        path = c["path"]
+        # Restore HEAD's (the target branch's) version; if the branch deleted the
+        # file, drop it entirely.
+        if git("checkout", "HEAD", "--", path, check=False, cwd=wt).returncode != 0:
+            git("rm", "--force", "--quiet", "--", path, check=False, cwd=wt)
+        else:
+            git("add", "--", path, cwd=wt)
+    # If nothing of the source fix remains staged, there is nothing to backport.
+    if git("diff", "--cached", "--quiet", check=False, cwd=wt).returncode == 0:
+        return False
+    cont = git(
+        "-c",
+        "user.name=backport-cli",
+        "-c",
+        "user.email=backport-cli@local",
+        "-c",
+        "core.editor=true",
+        "cherry-pick",
+        "--continue",
+        check=False,
+        cwd=wt,
+    )
+    return cont.returncode == 0
 
 
 # --------------------------------------------------------------------------

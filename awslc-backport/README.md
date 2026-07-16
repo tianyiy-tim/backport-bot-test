@@ -84,10 +84,12 @@ before analysis, so the verdict is independent of how the work was committed.
 The `ci` subcommand is the automated, post-merge counterpart to the local flow:
 given a **merged** commit it analyzes every supported branch (AI layer on) and
 opens a backport PR for each AFFECTED branch. Clean cherry-picks become PRs into
-the release branch (**never auto-merged**). Conflicting branches are **reported
-only** — the summary lists the clashing files per branch and points to `resolve`;
-nothing is modified and no draft PR is opened (an in-progress conflict can only be
-resolved live, not from a committed-markers branch).
+the release branch (**never auto-merged**). A conflict confined to **test/generated
+files only** is auto-resolved (the branch keeps its own tests, the source fix
+applies) and also becomes a normal PR, noted in the body — those trivial test
+clashes never reach manual resolution. Only branches with a **real source
+conflict** are **reported** — the summary lists the clashing files per branch and
+points to `resolve`; nothing is modified and no draft PR is opened.
 
 ```bash
 # what CI runs (open PRs on the fork for a merged commit):

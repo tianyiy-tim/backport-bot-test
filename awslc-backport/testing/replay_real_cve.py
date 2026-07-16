@@ -72,6 +72,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from ai import _ai_client  # noqa: E402
 from engine import (  # noqa: E402
+    _is_test_or_generated_file,
     _parse_eos_date,
     _patch_id_pathspec,
     find_introducing_commit,
@@ -562,6 +563,17 @@ def simulate_cherry_pick(sandbox, commit, branch):
         combined = (pick.stdout + pick.stderr).lower()
         if "empty" in combined or "nothing to commit" in combined:
             return "empty"
+        # A conflict confined to test/generated files means the source fix applied
+        # cleanly; the tool drops those hunks and finishes, so it's effectively a
+        # clean backport. Report it separately from a real source conflict.
+        status = git(worktree, "status", "--porcelain", check=False).stdout
+        unmerged = []
+        for line in status.splitlines():
+            xy, path = line[:2], line[3:].strip()
+            if "U" in xy or xy in ("AA", "DD"):
+                unmerged.append(path)
+        if unmerged and all(_is_test_or_generated_file(p) for p in unmerged):
+            return "test-only"
         return "conflict"
     finally:
         git(worktree, "cherry-pick", "--abort", check=False)

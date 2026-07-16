@@ -63,8 +63,14 @@ Cherry-picks are attempted in throwaway worktrees. A **clean** pick lands on a
 local `backport/<branch>/<id>` branch; `ci` pushes it and opens a normal PR. A
 **conflicting** pick is `git cherry-pick --abort`ed — `cherry_pick_local` returns
 `("conflict", None, [{path, kind}, ...])`, leaving nothing behind (no
-committed-markers branch, no draft PR). `ci` only *reports* conflicts (the summary
-cell lists the clashing files and points at `resolve`); `apply` reports them too.
+committed-markers branch, no draft PR). One exception: a conflict confined to
+**test/generated files only** is auto-resolved by `_drop_and_continue` (restore
+the branch's version of each test file, i.e. drop the fix's test churn, then
+`cherry-pick --continue`) and returns `("clean", local_branch, dropped)` where
+*dropped* lists the test files — so a trivial test clash becomes a normal PR (noted
+in the body) instead of manual resolution. `ci` only *reports* real source
+conflicts (the summary cell lists the clashing files and points at `resolve`);
+`apply` reports them too.
 
 `resolve` (`resolve.py`) is the interactive fixer. It buckets like `ci`, then for
 each AFFECTED branch checks it out in a **persistent** `add_worktree` and runs the

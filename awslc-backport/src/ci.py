@@ -64,18 +64,29 @@ def _open_backport_pr(
     remote: str,
     reason: str,
     dry_run: bool,
+    dropped: Optional[list] = None,
 ) -> str:
     """Push a clean cherry-pick branch to the fork and open a normal PR into the
     release branch (never a draft, never auto-merged). Conflicted branches are not
     handled here -- CI only reports them, and the user runs ``backport resolve``.
+    *dropped*, if set, lists test/generated files whose conflicting hunks were
+    dropped (source fix applied); it's noted in the PR body.
     Returns the PR URL, ``"dry-run"``, or an ``"error: ..."`` string."""
     link = f" of #{source_pr}" if source_pr else ""
     title = f"[backport {branch}] {subject}"
+    drop_note = ""
+    if dropped:
+        files = ", ".join(f"`{c['path']}`" for c in dropped)
+        drop_note = (
+            f"- ⚠️ Only test/generated files conflicted ({files}); their hunks were "
+            "**dropped** (branch keeps its own tests) so the source fix applies "
+            "cleanly. Port the test manually if you want the new coverage.\n"
+        )
     body = (
         f"Automated backport{link} (`{fix_sha[:12]}`) onto `{branch}`.\n\n"
         f"- Impact verdict: **AFFECTED** ({reason or 'deterministic'}).\n"
-        "- Clean cherry-pick; **not** auto-merged -- please review before "
-        "merging.\n\n"
+        f"{drop_note}"
+        "- **Not** auto-merged -- please review before merging.\n\n"
         "_Opened by the AWS-LC backport bot._"
     )
     if dry_run:
@@ -242,17 +253,16 @@ def cmd_ci(args) -> int:
     print(f"\nBackporting to '{args.remote}' for: {', '.join(targets)}\n")
     outcomes = {}
     for branch in targets:
-        status, detail, conflicts = cherry_pick_local(fix_sha, branch, fix_sha[:8])
+        status, detail, extra = cherry_pick_local(fix_sha, branch, fix_sha[:8])
         if status == "error":
             outcomes[branch] = ("error", detail)
             print(f"  [??] {branch}: error: {detail}")
             continue
         if status == "conflict":
-            outcomes[branch] = ("conflict", conflicts)
-            names = ", ".join(c["path"] for c in conflicts)
-            tag = " (test-only)" if _test_only(conflicts) else ""
+            outcomes[branch] = ("conflict", extra)
+            names = ", ".join(c["path"] for c in extra)
             print(
-                f"  [!!] {branch}: merge conflict{tag} in {names} — "
+                f"  [!!] {branch}: merge conflict in {names} — "
                 "resolve locally with `backport resolve`"
             )
             continue
@@ -265,6 +275,7 @@ def cmd_ci(args) -> int:
             args.remote,
             decided_by.get(branch, ""),
             args.dry_run,
+            dropped=extra or None,
         )
         if url.startswith("error:"):
             outcomes[branch] = ("error", url)
@@ -273,7 +284,12 @@ def cmd_ci(args) -> int:
             outcomes[branch] = ("dry-run", None)
         else:
             outcomes[branch] = ("opened", url)
-            print(f"  [OK] {branch}: {url}")
+            note = (
+                f"  (dropped test-only hunk: {', '.join(c['path'] for c in extra)})"
+                if extra
+                else ""
+            )
+            print(f"  [OK] {branch}: {url}{note}")
 
     _ci_report(args, fix_sha, subject, buckets, outcomes)
     return 0
