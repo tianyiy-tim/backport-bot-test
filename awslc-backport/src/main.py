@@ -96,7 +96,9 @@ def _add_analyze(sub) -> None:
     p.add_argument(
         "--commit",
         help="analyze an existing commit instead of a patch/working tree; the fix "
-        "is reconstructed internally (base defaults to <commit>^)",
+        "is reconstructed internally (base defaults to <commit>^). Accepts a "
+        "range for fixes split across commits: A..B, or A...B (e.g. "
+        "origin/main...HEAD) analyzes the net change of the whole span",
     )
     p.add_argument(
         "--yes",
@@ -129,7 +131,8 @@ def _add_apply(sub) -> None:
     p.add_argument(
         "--commit",
         help="apply an existing commit instead of the last analyzed run "
-        "(base defaults to <commit>^)",
+        "(base defaults to <commit>^); also accepts a range A..B / A...B for a "
+        "multi-commit fix (applied as its net change)",
     )
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument(

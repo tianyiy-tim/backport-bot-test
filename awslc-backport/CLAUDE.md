@@ -30,9 +30,11 @@ and `testing/` sit at the tool root.
   `enable_rerere`), `resolve_commit` (commit-ish -> fix_sha/subject, merge-commit
   aware), the two `git diff-tree` parsers, and repo targeting (`resolve_repo_path`
   / `target_repo` / `resolve_patch_path`).
-- `patches.py` — `commit_from_patch` (patch -> temp commit in a worktree),
-  patch-source resolution (`read_patch` / `resolve_patch_and_base`), and the
-  test-file confirmation prompt.
+- `patches.py` — `commit_from_patch` (patch -> one temp commit in a worktree;
+  always `reset --soft base` + recommit so the fix collapses to its **net diff**,
+  even from a multi-commit `git am`), patch-source resolution (`read_patch` /
+  `resolve_patch_and_base`, with `--commit` accepting a single ref *or* a range
+  `A..B`/`A...B` via `_range_endpoints`), and the test-file confirmation prompt.
 - `runstate.py` — the `analyze` -> `apply` cache (`save_run` / `load_run` /
   `delete_patch_artifacts`), stored inside the tool folder.
 - `verdicts.py` — `bucket_branches` (deterministic classification) and the two

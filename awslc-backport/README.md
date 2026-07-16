@@ -61,6 +61,22 @@ git -C <aws-lc> diff > fix.patch
 ./backport resolve --pr <number> --repo <aws-lc>     # or --commit <sha>
 ```
 
+**Fixes spread across several commits.** Not every fix is one commit. `analyze`
+(and `apply`) handle this three ways:
+- **Uncommitted edits** — `analyze` with no argument diffs `git diff HEAD`, which
+  already aggregates everything you've changed.
+- **A commit range** — pass `--commit A..B` (or `A...B`, e.g.
+  `--commit origin/main...HEAD` for "everything on my branch"). The whole span is
+  analyzed as its **net change**, so N small commits behave like one squash.
+- **A single commit / patch file** — `--commit <sha>` or a patch, as before.
+
+Internally the fix is always collapsed into one synthetic commit (its net diff)
+before analysis, so the verdict is independent of how the work was committed.
+
+```bash
+./backport analyze --commit origin/main...my-fix-branch --repo <aws-lc>
+```
+
 (`./backport` is the wrapper; equivalently `python3 src/main.py <cmd>`.)
 
 ## Post-merge automation (GitHub Actions)

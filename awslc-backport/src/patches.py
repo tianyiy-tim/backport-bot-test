@@ -69,16 +69,16 @@ def commit_from_patch(
 
     # The patch is piped to git over stdin, so it never gets written to disk.
     with temp_worktree(base) as worktree:
-        committed = False
+        applied = False
         if _is_format_patch(patch):
             am_args = ["am", "--3way"] if three_way else ["am"]
             am = git(*am_args, check=False, cwd=worktree, stdin=patch)
             if am.returncode == 0:
-                committed = True
+                applied = True
             else:
                 git("am", "--abort", check=False, cwd=worktree)
 
-        if not committed:
+        if not applied:
             apply_args = ["apply", "--3way"] if three_way else ["apply"]
             ap = git(*apply_args, check=False, cwd=worktree, stdin=patch)
             if ap.returncode != 0:
@@ -87,19 +87,27 @@ def commit_from_patch(
                     f"{base}:\n{(ap.stderr or ap.stdout).strip()}\n"
                     "If your local mainline has drifted, retry with --3way."
                 )
-            git("add", "-A", cwd=worktree)
-            git(
-                "-c",
-                "user.name=backport-cli",
-                "-c",
-                "user.email=backport-cli@local",
-                "commit",
-                "--quiet",
-                "-m",
-                _commit_message_from_patch(patch),
-                cwd=worktree,
-            )
 
+        # Collapse whatever we just applied -- a single diff, or one *or more*
+        # format-patch commits from `git am` -- into ONE synthetic commit whose
+        # parent is *base*. `git reset --soft` rewinds HEAD to base while keeping
+        # the applied tree staged, so the resulting commit's diff is the fix's
+        # *net* change. This is what makes a fix spread across several small
+        # commits analyze identically to one squashed commit.
+        git("reset", "--soft", base, cwd=worktree)
+        git("add", "-A", cwd=worktree)
+        git(
+            "-c",
+            "user.name=backport-cli",
+            "-c",
+            "user.email=backport-cli@local",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            _commit_message_from_patch(patch),
+            cwd=worktree,
+        )
         sha = git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
         yield sha
 
@@ -114,16 +122,43 @@ def is_empty_patch(patch: str) -> bool:
     return not patch.strip()
 
 
+def _range_endpoints(spec: str) -> "Optional[Tuple[str, str]]":
+    """If *spec* is a commit range, return ``(base, head)`` to diff, else None.
+
+    ``A..B`` -> ``(A, B)`` (the net change from A to B).
+    ``A...B`` -> ``(merge-base(A, B), B)`` (the change on B since it forked from A;
+    handy for "everything on my feature branch", e.g. ``origin/main...HEAD``).
+    An empty side defaults to HEAD.
+    """
+    for sep in ("...", ".."):
+        if sep in spec:
+            left, right = spec.split(sep, 1)
+            left, right = (left or "HEAD"), (right or "HEAD")
+            if sep == "...":
+                base = git("merge-base", left, right).stdout.strip()
+                if not base:
+                    raise BackportError(f"no merge base for range '{spec}'.")
+                return base, right
+            return left, right
+    return None
+
+
 def _explicit_patch_source(args) -> "Optional[Tuple[str, str, str]]":
     """``(patch, base, source)`` for an explicit ``--commit`` or ``--patch``, else None.
 
-    The one place that turns ``--commit`` (reconstruct via format-patch, base
-    ``<ref>^``) or ``--patch`` (read the file, base origin/main) into a patch.
-    Shared by :func:`read_patch` (analyze) and :func:`resolve_patch_and_base`
-    (apply); each supplies its own fallback when neither flag is given. *source*
-    is ``"commit"`` or ``"patch"``.
+    The one place that turns ``--commit`` or ``--patch`` into a patch. ``--commit``
+    accepts either a single ref (reconstructed via ``format-patch -1``, base
+    ``<ref>^``) or a **range** ``A..B`` / ``A...B`` -- the latter diffs the whole
+    span into one aggregate patch, so a fix made of several small commits is
+    analyzed as its net change (base = the range's start). ``--patch`` reads the
+    file (base origin/main). Shared by :func:`read_patch` (analyze) and
+    :func:`resolve_patch_and_base` (apply). *source* is ``"commit"`` or ``"patch"``.
     """
     if getattr(args, "commit", None):
+        rng = _range_endpoints(args.commit)
+        if rng:
+            base, head = rng
+            return git("diff", f"{base}..{head}").stdout, (args.base or base), "commit"
         patch = git("format-patch", "-1", "--stdout", args.commit).stdout
         return patch, (args.base or f"{args.commit}^"), "commit"
     if getattr(args, "patch", None):
