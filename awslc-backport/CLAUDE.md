@@ -51,9 +51,9 @@ and `testing/` sit at the tool root.
   the `anthropic` SDK; degrades to `None` with no SDK/credentials.
 
 Import DAG (no cycles): `common` <- `gitutil` <- {`patches`, `verdicts`} <-
-{`analyze`, `apply`, `ci`} <- `main`; `resolve` <- {`ci`, `gitutil`, `patches`,
-`verdicts`, `render`} <- `main`; `render` <- `common`; `engine`/`ai` are the
-leaf impact core.
+{`analyze`, `ci`} <- `main`; `resolve` <- {`ci`, `gitutil`, `patches`, `verdicts`,
+`render`}; `apply` <- `resolve` (for the on-conflict handoff) <- `main`; `render`
+<- `common`; `engine`/`ai` are the leaf impact core.
 
 ## Conflict handling: `ci` reports, `resolve` fixes
 
@@ -95,6 +95,13 @@ latest such marker (`_read_bot_plan`) and targets exactly the `conflict` branche
 — no second AI pass, and it seeds the final summary with the branches `ci` already
 opened. `--reanalyze` forces the local `bucket_branches`+`resolve_inconclusive`
 path instead; that path is also the automatic fallback when no marker is found.
+
+The resolution engine itself is `_run_resolution(args, fix_sha, subject, buckets,
+targets, preopened, source_pr)`, shared by two front-ends: `cmd_resolve` (targets
+from the PR plan or a local analysis) and `apply` (which, after a local
+cherry-pick session conflicts, prompts the user and hands off the just-conflicted
+branches directly — no re-analysis, no second bucketing). `_assert_fork_remote`
+only gates the push step, so purely-local resolution works regardless of remote.
 
 ## Bucketing (`verdicts.bucket_branches`)
 

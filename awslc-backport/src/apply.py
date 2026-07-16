@@ -12,8 +12,14 @@ from typing import List, Sequence, Tuple
 
 import engine as bot
 from common import AFFECTED
-from gitutil import cherry_pick_local
-from patches import commit_from_patch, is_empty_patch, resolve_patch_and_base
+from gitutil import cherry_pick_local, git
+from patches import (
+    _ask_yn,
+    commit_from_patch,
+    is_empty_patch,
+    resolve_patch_and_base,
+)
+from resolve import _run_resolution
 from runstate import delete_patch_artifacts, run_dir
 from verdicts import bucket_branches
 
@@ -125,10 +131,22 @@ def cmd_apply(args) -> int:
     if conflict:
         print(
             "\nConflicting branches were NOT modified (the cherry-pick was aborted; "
-            "no conflict markers were committed). Resolve them interactively with:\n"
-            "  backport resolve --commit " + fix_sha[:12] + "\n"
-            "which walks each conflicted file (Y/N) and opens one PR per branch."
+            "no conflict markers were committed)."
         )
+        if sys.stdin.isatty() and _ask_yn(
+            f"Resolve the {len(conflict)} conflicting branch(es) interactively now?"
+        ):
+            subject = git("log", "-1", "--format=%s", fix_sha).stdout.strip()
+            return _run_resolution(
+                args,
+                fix_sha,
+                subject,
+                buckets,
+                bot.sort_branches(conflict),
+                clean,  # already-applied clean backports (for the summary)
+                source_pr=None,
+            )
+        print("  Resolve them later with:  backport resolve --commit " + fix_sha[:12])
     print(
         "\nNothing was pushed or merged. Inspect `git branch --list 'backport/*'`, "
         "then push and open PRs for human review when ready."

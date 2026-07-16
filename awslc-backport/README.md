@@ -85,10 +85,13 @@ pushes branches and opens PRs on a fork (`--remote`, default `origin`).
 ## Resolving conflicts (`resolve`)
 
 When `ci` (or `apply`) reports a conflict, `resolve` fixes it locally with a
-human in the loop. Given a fix (`--pr <number>` or `--commit <sha>`) it finds the
-AFFECTED branches and, for each one that conflicts, drops you into an interactive
-shell **inside that branch's `git worktree`** — the fix is already cherry-picked
-and the conflict is live, so you're effectively "on" the branch:
+human in the loop. In fact, after a local `apply` hits conflicts it will offer to
+run the resolution right there (reusing the branches that just conflicted, so
+nothing is re-analyzed) — or you can invoke it directly. Given a fix (`--pr
+<number>` or `--commit <sha>`) it finds the AFFECTED branches and, for each one
+that conflicts, drops you into an interactive shell **inside that branch's `git
+worktree`** — the fix is already cherry-picked and the conflict is live, so you're
+effectively "on" the branch:
 
 ```
 >> Entering fips-2024-09-27 -- the fix is applied and conflicts are live here.

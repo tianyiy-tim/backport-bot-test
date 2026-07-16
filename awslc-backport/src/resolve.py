@@ -465,61 +465,18 @@ def _read_bot_plan(pr) -> "dict | None":
 # --------------------------------------------------------------------------
 
 
-def cmd_resolve(args) -> int:
-    """Interactively resolve backport conflicts and open one PR per branch."""
-    _assert_fork_remote(args.remote)
+def _run_resolution(
+    args, fix_sha, subject, buckets, targets, preopened, source_pr
+) -> int:
+    """Interactively resolve *targets* for *fix_sha*, then optionally open PRs.
 
-    # Prefer the backport bot's own summary on the PR: it already ran the impact
-    # analysis (AI) in CI, so reading its plan avoids a second AI pass and targets
-    # exactly the branches it flagged. Fall back to computing locally when there is
-    # no such comment (e.g. --commit with no PR) or when --reanalyze is given.
-    plan = None
-    if getattr(args, "pr", None) and not getattr(args, "reanalyze", False):
-        plan = _read_bot_plan(args.pr)
-
-    if plan:
-        fix_sha = plan.get("fix") or _resolve_fix_ref(args)[0]
-        subject = plan.get("subject", "")
-        branch_info = plan.get("branches", {})
-        buckets = {b: info.get("impact", AFFECTED) for b, info in branch_info.items()}
-        targets = bot.sort_branches(
-            b for b, info in branch_info.items() if info.get("outcome") == "conflict"
-        )
-        # Branches ci already opened clean PRs for -- carry them into the final
-        # summary so it stays complete (relinked to their existing PRs).
-        preopened = [
-            b
-            for b, info in branch_info.items()
-            if info.get("outcome") in ("opened", "done")
-        ]
-        if not ref_exists(fix_sha):
-            git("fetch", args.remote, fix_sha, check=False)
-        print(
-            f"Using the backport bot's summary from #{args.pr} "
-            f"(no re-analysis): {len(targets)} conflicting branch(es) to resolve."
-        )
-        if not targets:
-            print("Nothing left to resolve on that PR.")
-            return 0
-    else:
-        fix_sha, subject = _resolve_fix_ref(args)
-        branches = bot.sort_branches(bot.get_supported_branches())
-        if not branches:
-            raise BackportError(
-                "no supported release branches found (is this an AWS-LC clone with "
-                "the release branches fetched? `git fetch origin`)."
-            )
-        files, introducers, buckets = bucket_branches(fix_sha, branches)
-        buckets, decided_by, _ = resolve_inconclusive(
-            args, fix_sha, files, introducers, buckets
-        )
-        print_summary(fix_sha, files, introducers, buckets, decided_by)
-        targets = bot.sort_branches(b for b, s in buckets.items() if s == AFFECTED)
-        preopened = []
-        if not targets:
-            print("\nNo AFFECTED branches; nothing to resolve.")
-            return 0
-
+    Shared engine behind both entry points: `cmd_resolve` (which derives the
+    targets from the PR plan or a local analysis) and `apply` (which hands off the
+    branches that just conflicted during a local cherry-pick session, so nothing
+    is re-analyzed). *preopened* are branches already backported elsewhere (ci's
+    clean PRs), carried into the final summary; *source_pr*, when set, gets the
+    updated summary comment.
+    """
     if not sys.stdin.isatty():
         print(
             "\nresolve is interactive; run it in a terminal (not a pipe/CI).",
@@ -527,12 +484,11 @@ def cmd_resolve(args) -> int:
         )
         return 3
 
+    remote = getattr(args, "remote", "origin")
     enable_rerere()
     in_place = getattr(args, "in_place", False)
     original_ref = None
-    left_on_branch = (
-        None  # set if an --in-place branch is left checked out for the user
-    )
+    left_on_branch = None  # set if an --in-place branch is left checked out
     if in_place:
         dirty = git("status", "--porcelain").stdout.strip()
         if dirty:
@@ -616,10 +572,11 @@ def cmd_resolve(args) -> int:
         )
         return 0
 
+    _assert_fork_remote(remote)  # only gate the push, so local resolution always works
     print()
     created: "dict[str, str]" = {}
     for branch, local_branch in resolved.items():
-        url = _open_pr(branch, local_branch, fix_sha, subject, args.pr, args.remote)
+        url = _open_pr(branch, local_branch, fix_sha, subject, source_pr, remote)
         if url.startswith("error:"):
             print(f"  !! {branch}: {url}")
         else:
@@ -629,9 +586,9 @@ def cmd_resolve(args) -> int:
     # Post an updated ci-style summary on the source PR: the previously-conflicting
     # branches now show their opened backport PR instead of a conflict warning.
     still_conflicting = list(blocked) + ([left_on_branch] if left_on_branch else [])
-    if args.pr and created:
+    if source_pr and created:
         _post_resolution_summary(
-            args.pr,
+            source_pr,
             fix_sha,
             subject,
             buckets,
@@ -641,5 +598,69 @@ def cmd_resolve(args) -> int:
             errors,
             fix_sha[:8],
         )
-        print(f"\nUpdated the summary on #{args.pr}.")
+        print(f"\nUpdated the summary on #{source_pr}.")
     return 0
+
+
+def cmd_resolve(args) -> int:
+    """Interactively resolve backport conflicts and open one PR per branch."""
+    # Prefer the backport bot's own summary on the PR: it already ran the impact
+    # analysis (AI) in CI, so reading its plan avoids a second AI pass and targets
+    # exactly the branches it flagged. Fall back to computing locally when there is
+    # no such comment (e.g. --commit with no PR) or when --reanalyze is given.
+    plan = None
+    if getattr(args, "pr", None) and not getattr(args, "reanalyze", False):
+        plan = _read_bot_plan(args.pr)
+
+    if plan:
+        fix_sha = plan.get("fix") or _resolve_fix_ref(args)[0]
+        subject = plan.get("subject", "")
+        branch_info = plan.get("branches", {})
+        buckets = {b: info.get("impact", AFFECTED) for b, info in branch_info.items()}
+        targets = bot.sort_branches(
+            b for b, info in branch_info.items() if info.get("outcome") == "conflict"
+        )
+        # Branches ci already opened clean PRs for -- carry them into the final
+        # summary so it stays complete (relinked to their existing PRs).
+        preopened = [
+            b
+            for b, info in branch_info.items()
+            if info.get("outcome") in ("opened", "done")
+        ]
+        if not ref_exists(fix_sha):
+            git("fetch", args.remote, fix_sha, check=False)
+        print(
+            f"Using the backport bot's summary from #{args.pr} "
+            f"(no re-analysis): {len(targets)} conflicting branch(es) to resolve."
+        )
+        if not targets:
+            print("Nothing left to resolve on that PR.")
+            return 0
+    else:
+        fix_sha, subject = _resolve_fix_ref(args)
+        branches = bot.sort_branches(bot.get_supported_branches())
+        if not branches:
+            raise BackportError(
+                "no supported release branches found (is this an AWS-LC clone with "
+                "the release branches fetched? `git fetch origin`)."
+            )
+        files, introducers, buckets = bucket_branches(fix_sha, branches)
+        buckets, decided_by, _ = resolve_inconclusive(
+            args, fix_sha, files, introducers, buckets
+        )
+        print_summary(fix_sha, files, introducers, buckets, decided_by)
+        targets = bot.sort_branches(b for b, s in buckets.items() if s == AFFECTED)
+        preopened = []
+        if not targets:
+            print("\nNo AFFECTED branches; nothing to resolve.")
+            return 0
+
+    return _run_resolution(
+        args,
+        fix_sha,
+        subject,
+        buckets,
+        targets,
+        preopened,
+        source_pr=getattr(args, "pr", None),
+    )
