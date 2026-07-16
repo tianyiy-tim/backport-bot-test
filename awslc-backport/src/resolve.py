@@ -236,6 +236,96 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
     return "ready", local_branch
 
 
+def _current_ref() -> str:
+    """The branch name currently checked out, or the raw SHA if detached."""
+    r = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    return git("rev-parse", "HEAD").stdout.strip()
+
+
+def _resolve_branch_in_place(
+    fix_sha: str, branch: str, run_id: str, repo: str
+) -> "tuple[str, str]":
+    """Like :func:`_resolve_branch`, but checks the branch out **in the user's own
+    working repo** (detached) instead of a worktree, so their open IDE reflects the
+    conflict live. The caller restores the original branch afterwards.
+
+    Returns the same ``(status, detail)`` contract; for ``"blocked"`` the *detail*
+    is the branch name and the repo is intentionally left checked out on it so the
+    user can finish by hand.
+    """
+    ref = f"origin/{branch}"
+    if not ref_exists(ref):
+        return "error", f"{ref} not found"
+    local_branch = f"backport/{branch}/{run_id}"
+    co = git("checkout", "--quiet", "--detach", ref, check=False)
+    if co.returncode != 0:
+        return "error", f"could not check out {ref}: {(co.stderr or co.stdout).strip()}"
+
+    pick = git("cherry-pick", fix_sha, check=False)
+    if pick.returncode == 0:
+        # Clean -> ci/apply own it; skip. The commit sits on detached HEAD and is
+        # discarded when we check out the next branch / restore the original.
+        print(
+            f"  OK {branch}: clean cherry-pick, no conflict -- skipping "
+            "(clean backports are opened by `ci`/`apply`)."
+        )
+        return "clean", None
+
+    base_sha = git("rev-parse", ref).stdout.strip()
+    print(f"\n  >> Your working tree is now ON {branch} (detached), fix applied.")
+    print(f"     Repo: {repo}")
+    for c in unmerged_files(repo):
+        print(f"       - {c['path']} ({c['kind']})")
+    print(
+        "     Resolve the conflicts in your IDE (this is your real checkout), "
+        "then answer below. No need to `git add` -- resolved files are staged."
+    )
+    while True:
+        if not _ask_yn(f"  Done resolving {branch}?"):
+            print(
+                f"     Leaving you checked out on {branch} (mid cherry-pick) to "
+                "finish by hand:\n"
+                "       git add -A && git cherry-pick --continue   # when done\n"
+                "       git cherry-pick --abort                    # to bail"
+            )
+            return "blocked", branch
+        if not _cherry_pick_in_progress(repo):
+            head = git("rev-parse", "HEAD").stdout.strip()
+            if head == base_sha:
+                print(f"  .. {branch}: cherry-pick aborted; skipping.")
+                return "blocked", branch
+            break  # user ran --continue themselves
+        still = _stage_resolved(repo)
+        if not still:
+            break
+        print(f"  .. {branch}: still has conflict markers in: {', '.join(still)}")
+
+    if _cherry_pick_in_progress(repo):
+        cont = git(
+            "-c",
+            "user.name=backport-cli",
+            "-c",
+            "user.email=backport-cli@local",
+            "-c",
+            "core.editor=true",
+            "cherry-pick",
+            "--continue",
+            check=False,
+        )
+        if cont.returncode != 0:
+            print(
+                f"  !! {branch}: `cherry-pick --continue` failed: "
+                f"{(cont.stderr or cont.stdout).strip()}"
+            )
+            return "blocked", branch
+    new_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("branch", "-f", local_branch, new_sha)
+    print(f"  OK {branch}: conflicts resolved, backport commit ready ({local_branch}).")
+    return "ready", local_branch
+
+
 # --------------------------------------------------------------------------
 # Opening a PR for a ready branch
 # --------------------------------------------------------------------------
@@ -319,7 +409,31 @@ def cmd_resolve(args) -> int:
         return 3
 
     enable_rerere()
-    print(f"\nResolving conflicting backports among: {', '.join(targets)}")
+    in_place = getattr(args, "in_place", False)
+    original_ref = None
+    left_on_branch = (
+        None  # set if an --in-place branch is left checked out for the user
+    )
+    if in_place:
+        dirty = git("status", "--porcelain").stdout.strip()
+        if dirty:
+            raise BackportError(
+                "--in-place needs a clean working tree (it checks each branch out "
+                "in your current repo). Commit or stash your changes first."
+            )
+        original_ref = _current_ref()
+        if os.path.abspath(__file__).startswith(
+            os.path.abspath(bot.REPO_PATH) + os.sep
+        ):
+            print(
+                "note: the tool lives inside the target repo, so --in-place will "
+                "briefly remove `awslc-backport/` while a release branch is checked "
+                "out (restored at the end). To avoid that, run from a separate clone "
+                "with --repo."
+            )
+
+    mode = "in your current checkout" if in_place else "in isolated worktrees"
+    print(f"\nResolving conflicting backports ({mode}) among: {', '.join(targets)}")
     print(
         "(clean cherry-picks are skipped -- `ci`/`apply` open those; `resolve` only "
         "handles branches that conflict. git rerere is on, so resolving a conflict "
@@ -328,25 +442,44 @@ def cmd_resolve(args) -> int:
 
     resolved: "dict[str, str]" = {}  # conflict branch -> local_branch (ready to PR)
     clean_skipped: "list[str]" = []  # clean cherry-picks (ci/apply's job)
-    blocked: "dict[str, str]" = {}  # branch -> worktree path
+    blocked: "dict[str, str]" = {}  # branch -> worktree path / branch name
     errors: "dict[str, str]" = {}  # branch -> message
     for branch in targets:
         print(f"\n== {branch} " + "=" * max(0, 48 - len(branch)))
-        status, detail = _resolve_branch(fix_sha, branch, fix_sha[:8])
+        if in_place:
+            status, detail = _resolve_branch_in_place(
+                fix_sha, branch, fix_sha[:8], bot.REPO_PATH
+            )
+        else:
+            status, detail = _resolve_branch(fix_sha, branch, fix_sha[:8])
         if status == "clean":
             clean_skipped.append(branch)
         elif status == "ready":
             resolved[branch] = detail
         elif status == "blocked":
+            if in_place:
+                # The repo is left checked out on this branch mid-cherry-pick; stop
+                # here rather than yanking it out from under the user.
+                left_on_branch = branch
+                break
             blocked[branch] = detail
         else:
             errors[branch] = detail
             print(f"  !! {branch}: {detail}")
 
+    # Restore the user's original branch unless we deliberately left them on one.
+    if in_place and original_ref and not left_on_branch:
+        git("checkout", "--quiet", original_ref, check=False)
+
     print("\n" + "=" * 60)
     if clean_skipped:
         print(f"Clean (no conflict, handled by ci/apply): {', '.join(clean_skipped)}")
     print(f"Resolved & ready to PR: {', '.join(resolved) or '-'}")
+    if left_on_branch:
+        print(
+            f"Stopped on {left_on_branch} (checked out in your repo, mid cherry-pick). "
+            f"Finish it, then re-run `resolve` for the rest."
+        )
     if blocked:
         print(f"Unfinished  : {', '.join(blocked)} (worktrees kept)")
     if errors:

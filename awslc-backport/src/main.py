@@ -175,6 +175,13 @@ def _add_resolve(sub) -> None:
     p.add_argument("--commit", help="fix commit SHA to backport")
     p.add_argument("--pr", help="source PR number to backport (resolved via gh)")
     p.add_argument(
+        "--in-place",
+        dest="in_place",
+        action="store_true",
+        help="check each conflicting branch out in your current repo (so your open "
+        "IDE reflects it) instead of an isolated worktree; needs a clean tree",
+    )
+    p.add_argument(
         "--remote",
         default="origin",
         help="fork remote to push branches / open PRs on (default origin)",

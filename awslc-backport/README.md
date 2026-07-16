@@ -113,6 +113,18 @@ When the conflicts are resolved it asks whether to open PRs, then pushes and ope
 ./backport resolve --commit <sha> --no-ai --repo <aws-lc>
 ```
 
+By default the conflict is edited in a throwaway worktree (a full checkout you can
+open in your editor). If you'd rather resolve it in your **own** repo so your
+already-open IDE window updates in real time, pass `--in-place`: it checks each
+conflicting branch out (detached) in your working repo, waits while you fix it,
+then restores your original branch when done. It needs a clean working tree, and
+is best run from a **separate** clone via `--repo` (checking out a release branch
+in the repo the tool lives in temporarily hides `awslc-backport/`).
+
+```bash
+./backport resolve --pr 42 --in-place --repo <aws-lc>
+```
+
 Like `ci`, `resolve` targets a fork only. It is interactive, so run it in a
 terminal (not a pipe/CI).
 
