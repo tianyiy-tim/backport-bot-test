@@ -80,7 +80,13 @@ branch, removes the worktree, and (after a final Y/N) opens one non-draft PR per
 on purpose) so a resolution recorded on one branch auto-applies to a twin branch's
 identical conflict but still surfaces marker-free for the user to verify. The
 user's own checkout is never touched; unfinished branches leave their worktree in
-place and are not PR'd.
+place and are not PR'd. After opening PRs, if `--pr` was given, `resolve` posts an
+updated `_summary_table` comment on the source PR (reusing `ci`'s renderer) with
+the resolved branches now shown as opened PRs (`done`/`opened` cell kinds).
+
+`--in-place` swaps each conflicting branch into the user's working repo (detached)
+instead of a worktree — same resolve logic (`_resolve_branch_in_place`), guarded by
+a clean-tree check, restoring the original branch at the end.
 
 ## Bucketing (`verdicts.bucket_branches`)
 

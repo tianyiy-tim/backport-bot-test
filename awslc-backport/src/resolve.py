@@ -25,7 +25,7 @@ import subprocess
 import sys
 
 import engine as bot
-from ci import _assert_fork_remote, _gh
+from ci import _assert_fork_remote, _gh, _summary_table
 from common import AFFECTED, BackportError
 from gitutil import (
     add_worktree,
@@ -373,6 +373,59 @@ def _open_pr(
     return pr.stdout.strip()
 
 
+def _find_open_pr_url(head: str) -> "str | None":
+    """URL of the open PR whose head branch is *head*, or None. Used to relink the
+    clean backport PRs `ci` already opened when we rebuild the summary."""
+    r = _gh(
+        "pr",
+        "list",
+        "--head",
+        head,
+        "--state",
+        "open",
+        "--json",
+        "url",
+        "-q",
+        ".[0].url",
+        check=False,
+    )
+    return r.stdout.strip() or None
+
+
+def _post_resolution_summary(
+    pr,
+    fix_sha,
+    subject,
+    buckets,
+    created,
+    clean_skipped,
+    still_conflicting,
+    errors,
+    run_id,
+) -> None:
+    """Post an updated, ci-style summary comment on the source PR after resolving.
+
+    Same table format as `ci`, but the previously-conflicting branches now show
+    their freshly opened backport PR (✅) instead of a merge-conflict warning.
+    """
+    outcomes: dict = {}
+    for branch, url in created.items():
+        outcomes[branch] = ("opened", url)
+    for branch in clean_skipped:
+        url = _find_open_pr_url(f"backport/{branch}/{run_id}")
+        outcomes[branch] = ("opened", url) if url else ("done", None)
+    for branch in still_conflicting:
+        outcomes[branch] = ("error", "still needs resolution")
+    for branch, msg in errors.items():
+        outcomes[branch] = ("error", msg)
+    table = _summary_table(fix_sha, subject, buckets, outcomes, source_pr=pr)
+    body = (
+        "🔧 **Updated after `backport resolve`** — conflicts resolved locally; "
+        "backport PRs opened for the previously-conflicting branches.\n\n" + table
+    )
+    _gh("pr", "comment", str(pr), "--body", body, check=False)
+
+
 # --------------------------------------------------------------------------
 # Command
 # --------------------------------------------------------------------------
@@ -498,10 +551,29 @@ def cmd_resolve(args) -> int:
         return 0
 
     print()
+    created: "dict[str, str]" = {}
     for branch, local_branch in resolved.items():
         url = _open_pr(branch, local_branch, fix_sha, subject, args.pr, args.remote)
         if url.startswith("error:"):
             print(f"  !! {branch}: {url}")
         else:
+            created[branch] = url
             print(f"  OK {branch}: {url}")
+
+    # Post an updated ci-style summary on the source PR: the previously-conflicting
+    # branches now show their opened backport PR instead of a conflict warning.
+    still_conflicting = list(blocked) + ([left_on_branch] if left_on_branch else [])
+    if args.pr and created:
+        _post_resolution_summary(
+            args.pr,
+            fix_sha,
+            subject,
+            buckets,
+            created,
+            clean_skipped,
+            still_conflicting,
+            errors,
+            fix_sha[:8],
+        )
+        print(f"\nUpdated the summary on #{args.pr}.")
     return 0

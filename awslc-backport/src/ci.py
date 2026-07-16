@@ -122,6 +122,8 @@ def _backport_cell(state: str, outcome) -> str:
         names = ", ".join(f"`{os.path.basename(c['path'])}`" for c in value)
         suffix = " (test-only, likely trivial)" if _test_only(value) else ""
         return f"⚠️ merge conflict: {names} — resolve locally{suffix}"
+    if kind == "done":
+        return "✅ backported"
     num = value.rstrip("/").rsplit("/", 1)[-1]
     return f"✅ [#{num}]({value})"
 
@@ -136,7 +138,7 @@ def _summary_table(
     def kind_of(b):
         return (outcomes.get(b) or (None, None))[0]
 
-    opened = sum(1 for b in buckets if kind_of(b) == "opened")
+    opened = sum(1 for b in buckets if kind_of(b) in ("opened", "done"))
     manual = sum(1 for b in buckets if kind_of(b) in ("conflict", "error"))
     not_aff = sum(1 for s in buckets.values() if s == NOT_AFFECTED)
     already = sum(1 for s in buckets.values() if s == ALREADY)

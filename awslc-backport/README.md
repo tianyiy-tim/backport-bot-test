@@ -106,7 +106,10 @@ conflicting branch. Clean cherry-picks are skipped (`ci`/`apply` open those).
 identical conflicts on sibling branches (e.g. the FIPS twins) — you just verify.
 When the conflicts are resolved it asks whether to open PRs, then pushes and opens
 **one normal (non-draft) PR per resolved branch**, titled `[backport <branch>]
-<fix subject>`. Your own checkout is never touched.
+<fix subject>`. Finally, if it was given `--pr`, it posts an **updated summary
+comment** on the source PR — the same table `ci` produced, but with the
+previously-conflicting branches now showing ✅ and their opened backport PR. Your
+own checkout is never touched.
 
 ```bash
 ./backport resolve --pr 42 --repo <aws-lc>
