@@ -86,24 +86,30 @@ pushes branches and opens PRs on a fork (`--remote`, default `origin`).
 
 When `ci` (or `apply`) reports a conflict, `resolve` fixes it locally with a
 human in the loop. Given a fix (`--pr <number>` or `--commit <sha>`) it finds the
-AFFECTED branches and, for each one that conflicts, checks it out in a real `git
-worktree` and walks you through the conflicted files **one at a time**:
+AFFECTED branches and, for each one that conflicts, drops you into an interactive
+shell **inside that branch's `git worktree`** — the fix is already cherry-picked
+and the conflict is live, so you're effectively "on" the branch:
 
 ```
-crypto/fipsmodule/dh/dh.c requires conflict resolution, has the conflict been resolved? [Y/N]
+>> Entering fips-2024-09-27 -- the fix is applied and conflicts are live here.
+   Worktree: /var/folders/.../backport-resolve-XXXX/wt
+   Edit these (they contain <<<<<<< / >>>>>>> markers):
+     - crypto/fipsmodule/dh/dh.c
+   Then type `exit` (or Ctrl-D) to continue.
 ```
 
-Edit the file in the printed worktree path, answer `Y`, and it re-scans for
-leftover `<<<<<<<` / `>>>>>>>` markers (refusing to stage a half-fixed file) before
-moving to the next file, then the next branch. Clean cherry-picks are skipped
-(`ci`/`apply` open those). `git rerere` is enabled, so a resolution recorded on
-one branch is auto-applied to identical conflicts on sibling branches (e.g. the
-FIPS twins) — you still confirm each one. When the conflicts are resolved it asks
-whether to open PRs, then pushes and opens **one normal (non-draft) PR per
-resolved branch**, titled `[backport <branch>] <fix subject>`.
+Edit the files with your own editor, then `exit` the shell. Files you've cleaned
+up are staged for you automatically; anything still holding `<<<<<<<` / `>>>>>>>`
+markers is reported and you can re-enter. Then it moves you into the next
+conflicting branch. Clean cherry-picks are skipped (`ci`/`apply` open those).
+`git rerere` is enabled, so a resolution recorded on one branch is auto-applied to
+identical conflicts on sibling branches (e.g. the FIPS twins) — you just verify.
+When the conflicts are resolved it asks whether to open PRs, then pushes and opens
+**one normal (non-draft) PR per resolved branch**, titled `[backport <branch>]
+<fix subject>`. Your own checkout is never touched.
 
 ```bash
-./backport resolve --pr 3337 --repo <aws-lc>
+./backport resolve --pr 42 --repo <aws-lc>
 ./backport resolve --commit <sha> --no-ai --repo <aws-lc>
 ```
 

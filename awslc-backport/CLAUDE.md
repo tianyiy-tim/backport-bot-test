@@ -68,15 +68,19 @@ cell lists the clashing files and points at `resolve`); `apply` reports them too
 each AFFECTED branch checks it out in a **persistent** `add_worktree` and runs the
 cherry-pick live. A **clean** pick is aborted and skipped (`ci`/`apply` own clean
 backports; re-opening them here would clash on the same branch name). A
-**conflicting** pick is walked via `unmerged_files` one file at a time, prompting
-Y/N per file. On Y it re-checks `file_has_conflict_markers` and refuses to stage
-(re-prompts) if markers remain; `git add`ing a file drops it from the unmerged set
-so the loop advances. When all files are staged it runs `cherry-pick --continue`,
-creates the local branch, removes the worktree, and (after a final Y/N) opens one
-non-draft PR per **resolved** branch. `git rerere` is enabled (`enable_rerere`,
-autoupdate **off** on purpose) so a resolution recorded on one branch auto-applies
-to a twin branch's identical conflict but still surfaces marker-free for the user
-to verify. Unfinished branches leave their worktree in place and are not PR'd.
+**conflicting** pick drops the user into an interactive shell (`_edit_in_branch_shell`
+-> `subprocess.call([$SHELL], cwd=wt)`) *inside* that branch's worktree, so they
+edit the live conflict in place. On exit, `_stage_resolved` stages every unmerged
+file that no longer has markers and returns the ones that still do; if any remain
+the user is offered a re-enter, otherwise `cherry-pick --continue` runs (unless the
+user already continued/aborted it themselves, detected via
+`_cherry_pick_in_progress` + a HEAD-vs-base check). Then it creates the local
+branch, removes the worktree, and (after a final Y/N) opens one non-draft PR per
+**resolved** branch. `git rerere` is enabled (`enable_rerere`, autoupdate **off**
+on purpose) so a resolution recorded on one branch auto-applies to a twin branch's
+identical conflict but still surfaces marker-free for the user to verify. The
+user's own checkout is never touched; unfinished branches leave their worktree in
+place and are not PR'd.
 
 ## Bucketing (`verdicts.bucket_branches`)
 

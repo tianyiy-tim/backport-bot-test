@@ -3,12 +3,16 @@ The ``resolve`` command: interactive, local backport-conflict resolution.
 
 Given a fix (``--commit <sha>`` or ``--pr <number>``), find the AFFECTED release
 branches (AI on unless ``--no-ai``) and, for each one whose cherry-pick
-**conflicts**, walk the user file-by-file through resolving it in a real ``git
-worktree`` they can edit. ``git rerere`` is enabled, so resolving a conflict once
-auto-applies to identical conflicts on sibling branches (e.g. the FIPS twin
-branches). When the conflicts are resolved, optionally push and open one normal
-(non-draft) PR per resolved branch.
+**conflicts**, drop the user into an interactive shell *inside* that branch's
+throwaway ``git worktree`` -- the fix is already applied and the conflict is live,
+so they edit the files in place with their own editor, then ``exit`` to continue
+to the next branch. Files they've cleaned up are staged automatically; anything
+still holding conflict markers is reported and they can re-enter. ``git rerere`` is
+enabled, so resolving a conflict once auto-applies to identical conflicts on
+sibling branches (e.g. the FIPS twins). When the conflicts are resolved,
+optionally push and open one normal (non-draft) PR per resolved branch.
 
+The user's real checkout is never touched -- everything happens in worktrees.
 Clean cherry-picks are **skipped** here on purpose: ``ci`` (and ``apply``) already
 open those, so re-opening them from ``resolve`` would clash on the same branch
 name. ``resolve`` owns exactly the branches ``ci`` reported as conflicts — it is
@@ -17,6 +21,7 @@ the local, human-in-the-loop counterpart that finishes what ``ci`` could not.
 
 import json
 import os
+import subprocess
 import sys
 
 import engine as bot
@@ -84,61 +89,69 @@ def _resolve_fix_ref(args) -> "tuple[str, str]":
 # --------------------------------------------------------------------------
 
 
-def _walk_conflicts(wt: str, branch: str) -> "list[str]":
-    """Walk the unmerged files in *wt* one at a time, prompting the user.
+def _cherry_pick_in_progress(wt: str) -> bool:
+    """True if a cherry-pick is still in progress in *wt* (CHERRY_PICK_HEAD exists).
+    False once the user (or we) run ``git cherry-pick --continue``/``--abort``."""
+    return (
+        git(
+            "rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD", check=False, cwd=wt
+        ).returncode
+        == 0
+    )
 
-    For each file: content conflicts prompt "has the conflict been resolved?";
-    files with no markers (auto-resolved by rerere, or a modify/delete) are noted
-    and confirmed. On "Y" we re-scan for leftover ``<<<<<<<`` / ``>>>>>>>`` markers
-    and refuse to stage (re-prompt) if any remain -- markers are never committed.
-    On "N" the file is left unresolved and we move on.
 
-    Staging a file (``git add``) drops it from the unmerged set, so the loop
-    naturally advances file by file. Returns the list of paths left unresolved.
+def _stage_resolved(wt: str) -> "list[str]":
+    """Stage every unmerged file that no longer contains conflict markers, and
+    return the paths that STILL have markers (i.e. not yet resolved).
+
+    This is how we let the user just edit files in the shell without needing to
+    ``git add`` -- anything they've cleaned up gets staged for them, and anything
+    still holding ``<<<<<<<`` / ``>>>>>>>`` markers is reported back so we never
+    continue the cherry-pick with an unresolved file.
     """
-    unresolved: "list[str]" = []
-    asked: "set[str]" = set()
-    while True:
-        remaining = [f for f in unmerged_files(wt) if f["path"] not in asked]
-        if not remaining:
-            break
-        entry = remaining[0]
-        path, kind = entry["path"], entry["kind"]
-        full = os.path.join(wt, path)
-
-        if kind == "modify/delete":
-            print(
-                f"\n  - {path}: {kind} -- the fix changes a file this branch "
-                "deleted (or vice versa). Keep or remove it as appropriate."
-            )
-            prompt = f"{path} ({kind}) -- has this been resolved?"
-        elif not file_has_conflict_markers(full):
-            print(
-                f"\n  - {path}: auto-resolved (via rerere?) -- please VERIFY the "
-                "result is correct before confirming."
-            )
-            prompt = f"{path} -- resolution looks applied; is it correct?"
+    still: "list[str]" = []
+    for f in unmerged_files(wt):
+        if file_has_conflict_markers(os.path.join(wt, f["path"])):
+            still.append(f["path"])
         else:
-            prompt = (
-                f"{path} requires conflict resolution, "
-                "has the conflict been resolved?"
-            )
+            git("add", "--", f["path"], cwd=wt)
+    return still
 
-        if not _ask_yn("  " + prompt):
-            unresolved.append(path)
-            asked.add(path)
-            continue
 
-        # "Y": never stage a file that still has conflict markers.
-        if file_has_conflict_markers(full):
-            print(
-                "    !! still contains <<<<<<< / >>>>>>> conflict markers -- "
-                "not resolved. Please finish editing it, then answer again."
-            )
-            continue  # re-prompt the same file
-        git("add", "--", path, cwd=wt)
+def _edit_in_branch_shell(wt: str, branch: str) -> None:
+    """Drop the user into an interactive shell *inside* the branch's worktree.
 
-    return unresolved
+    The fix is already cherry-picked there and the conflicts are live, so the user
+    is literally "in" the branch: `git status` shows the conflict, they edit with
+    their own editor, and can run any git command. Typing ``exit`` (or Ctrl-D)
+    returns control to ``resolve``. Their real checkout is never touched.
+    """
+    conflicts = unmerged_files(wt)
+    marker_files = [
+        c["path"]
+        for c in conflicts
+        if file_has_conflict_markers(os.path.join(wt, c["path"]))
+    ]
+    rerere_files = [c["path"] for c in conflicts if c["path"] not in marker_files]
+
+    print(
+        f"\n  >> Entering {branch} -- the fix is applied and conflicts are live here."
+    )
+    print(f"     Worktree: {wt}")
+    if marker_files:
+        print("     Edit these (they contain <<<<<<< / >>>>>>> markers):")
+        for p in marker_files:
+            print(f"       - {p}")
+    if rerere_files:
+        print("     Auto-resolved via rerere -- please VERIFY:")
+        for p in rerere_files:
+            print(f"       - {p}")
+    print(
+        "     Then type `exit` (or Ctrl-D) to continue. No need to `git add` -- "
+        "resolved files are staged for you.\n"
+    )
+    shell = os.environ.get("SHELL") or "/bin/bash"
+    subprocess.call([shell], cwd=wt)
 
 
 def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]":
@@ -174,37 +187,48 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
         )
         return "clean", None
 
-    print(f"\n  !! {branch}: conflicts -- edit the files in:\n      {wt}")
-    unresolved = _walk_conflicts(wt, branch)
-    if unresolved:
-        print(
-            f"  .. {branch}: {len(unresolved)} file(s) still unresolved "
-            f"({', '.join(unresolved)}).\n"
-            f"      The cherry-pick is paused in {wt}\n"
-            "      Finish there (edit, `git add`, `git cherry-pick --continue`), "
-            "or re-run `resolve` later. Worktree left in place."
-        )
-        return "blocked", wt
+    print(f"\n  !! {branch}: {len(unmerged_files(wt))} conflicting file(s).")
+    base_sha = git("rev-parse", ref).stdout.strip()
+    while True:
+        _edit_in_branch_shell(wt, branch)
+        if not _cherry_pick_in_progress(wt):
+            # The user finished (or aborted) the cherry-pick themselves in the shell.
+            head = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
+            if head == base_sha:
+                print(
+                    f"  .. {branch}: cherry-pick was aborted in the shell; nothing "
+                    f"committed. Skipping. Worktree left in place: {wt}"
+                )
+                return "blocked", wt
+            break  # they committed the resolution themselves
+        still = _stage_resolved(wt)
+        if not still:
+            break
+        print(f"  .. {branch}: still has conflict markers in: {', '.join(still)}")
+        if not _ask_yn(f"  Re-enter {branch} to keep resolving?"):
+            print(f"      Worktree left in place: {wt}")
+            return "blocked", wt
 
-    cont = git(
-        "-c",
-        "user.name=backport-cli",
-        "-c",
-        "user.email=backport-cli@local",
-        "-c",
-        "core.editor=true",
-        "cherry-pick",
-        "--continue",
-        check=False,
-        cwd=wt,
-    )
-    if cont.returncode != 0:
-        print(
-            f"  !! {branch}: `cherry-pick --continue` failed: "
-            f"{(cont.stderr or cont.stdout).strip()}\n"
-            f"      Worktree left in place: {wt}"
+    if _cherry_pick_in_progress(wt):
+        cont = git(
+            "-c",
+            "user.name=backport-cli",
+            "-c",
+            "user.email=backport-cli@local",
+            "-c",
+            "core.editor=true",
+            "cherry-pick",
+            "--continue",
+            check=False,
+            cwd=wt,
         )
-        return "blocked", wt
+        if cont.returncode != 0:
+            print(
+                f"  !! {branch}: `cherry-pick --continue` failed: "
+                f"{(cont.stderr or cont.stdout).strip()}\n"
+                f"      Worktree left in place: {wt}"
+            )
+            return "blocked", wt
     new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
     git("branch", "-f", local_branch, new_sha)
     remove_worktree(wt)
