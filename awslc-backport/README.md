@@ -116,6 +116,13 @@ own checkout is never touched.
 ./backport resolve --commit <sha> --no-ai --repo <aws-lc>
 ```
 
+When given `--pr`, `resolve` reads the backport bot's own summary comment from the
+PR (a hidden machine-readable snapshot `ci` embeds) to learn exactly which
+branches conflicted — so it does **not** re-run the impact analysis (no second AI
+pass, and it targets precisely what `ci` reported). Pass `--reanalyze` to ignore
+the comment and recompute locally instead (deterministic, or AI unless `--no-ai`);
+this is also the automatic fallback when there is no bot summary (e.g. `--commit`).
+
 By default the conflict is edited in a throwaway worktree (a full checkout you can
 open in your editor). If you'd rather resolve it in your **own** repo so your
 already-open IDE window updates in real time, pass `--in-place`: it checks each

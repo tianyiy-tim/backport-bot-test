@@ -8,6 +8,7 @@ if ``--pr`` is given, flagged in a comment on the source PR. Refuses to target
 upstream aws/aws-lc -- fork remotes only.
 """
 
+import json
 import os
 import re
 from typing import Optional
@@ -173,13 +174,37 @@ def _summary_table(
     return "\n".join(lines)
 
 
+_PLAN_MARKER_PREFIX = "<!-- backport-bot-plan:"
+_PLAN_MARKER_SUFFIX = " -->"
+
+
+def _plan_marker(fix_sha: str, subject: str, buckets, outcomes) -> str:
+    """A hidden, machine-readable snapshot of the run, embedded in the summary
+    comment. ``resolve`` reads this back from the PR so it can target exactly the
+    branches this run flagged -- without re-running the impact analysis (AI).
+
+    Invisible when the comment is rendered (it's an HTML comment).
+    """
+    branches = {}
+    for branch, state in buckets.items():
+        kind, value = outcomes.get(branch) or (None, None)
+        entry = {"impact": state, "outcome": kind}
+        if kind == "conflict":
+            entry["files"] = [c["path"] for c in value]
+        branches[branch] = entry
+    payload = {"fix": fix_sha, "subject": subject, "branches": branches}
+    blob = json.dumps(payload, separators=(",", ":"))
+    return f"{_PLAN_MARKER_PREFIX}{blob}{_PLAN_MARKER_SUFFIX}"
+
+
 def _ci_report(args, fix_sha, subject, buckets, outcomes) -> None:
     """Print the per-branch status table, post it as a comment on the source PR,
     and emit GitHub Actions warnings for branches that need manual backport."""
     table = _summary_table(fix_sha, subject, buckets, outcomes, source_pr=args.pr)
     print("\n" + table)
     if args.pr and not args.dry_run:
-        _gh("pr", "comment", str(args.pr), "--body", table, check=False)
+        body = table + "\n\n" + _plan_marker(fix_sha, subject, buckets, outcomes)
+        _gh("pr", "comment", str(args.pr), "--body", body, check=False)
     for branch, outcome in outcomes.items():
         if outcome[0] in ("conflict", "error"):
             print(f"::warning::backport to {branch} needs manual resolution")

@@ -88,6 +88,14 @@ the resolved branches now shown as opened PRs (`done`/`opened` cell kinds).
 instead of a worktree — same resolve logic (`_resolve_branch_in_place`), guarded by
 a clean-tree check, restoring the original branch at the end.
 
+To avoid running the impact analysis twice, `ci` embeds a hidden machine-readable
+snapshot in its summary comment (`_plan_marker` -> `<!-- backport-bot-plan:{json} -->`
+with each branch's impact/outcome/conflict-files). With `--pr`, `resolve` reads the
+latest such marker (`_read_bot_plan`) and targets exactly the `conflict` branches
+— no second AI pass, and it seeds the final summary with the branches `ci` already
+opened. `--reanalyze` forces the local `bucket_branches`+`resolve_inconclusive`
+path instead; that path is also the automatic fallback when no marker is found.
+
 ## Bucketing (`verdicts.bucket_branches`)
 
 Per branch, deterministically (no AI):

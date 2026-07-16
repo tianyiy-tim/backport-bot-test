@@ -21,11 +21,12 @@ the local, human-in-the-loop counterpart that finishes what ``ci`` could not.
 
 import json
 import os
+import re
 import subprocess
 import sys
 
 import engine as bot
-from ci import _assert_fork_remote, _gh, _summary_table
+from ci import _assert_fork_remote, _gh, _plan_marker, _summary_table
 from common import AFFECTED, BackportError
 from gitutil import (
     add_worktree,
@@ -421,9 +422,42 @@ def _post_resolution_summary(
     table = _summary_table(fix_sha, subject, buckets, outcomes, source_pr=pr)
     body = (
         "🔧 **Updated after `backport resolve`** — conflicts resolved locally; "
-        "backport PRs opened for the previously-conflicting branches.\n\n" + table
+        "backport PRs opened for the previously-conflicting branches.\n\n"
+        + table
+        + "\n\n"
+        + _plan_marker(fix_sha, subject, buckets, outcomes)
     )
     _gh("pr", "comment", str(pr), "--body", body, check=False)
+
+
+_PLAN_RE = re.compile(r"<!-- backport-bot-plan:(.*?) -->")
+
+
+def _read_bot_plan(pr) -> "dict | None":
+    """Read the backport bot's machine-readable plan from the latest summary
+    comment on *pr*, so we can target exactly the branches `ci` flagged without
+    re-running the impact analysis. Returns the parsed dict, or None if there is
+    no such comment (then the caller falls back to computing it locally).
+    """
+    r = _gh(
+        "pr",
+        "view",
+        str(pr),
+        "--json",
+        "comments",
+        "-q",
+        ".comments[].body",
+        check=False,
+    )
+    if r.returncode != 0:
+        return None
+    matches = _PLAN_RE.findall(r.stdout)
+    if not matches:
+        return None
+    try:
+        return json.loads(matches[-1])  # the most recent summary wins
+    except json.JSONDecodeError:
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -434,25 +468,57 @@ def _post_resolution_summary(
 def cmd_resolve(args) -> int:
     """Interactively resolve backport conflicts and open one PR per branch."""
     _assert_fork_remote(args.remote)
-    fix_sha, subject = _resolve_fix_ref(args)
 
-    branches = bot.sort_branches(bot.get_supported_branches())
-    if not branches:
-        raise BackportError(
-            "no supported release branches found (is this an AWS-LC clone with "
-            "the release branches fetched? `git fetch origin`)."
+    # Prefer the backport bot's own summary on the PR: it already ran the impact
+    # analysis (AI) in CI, so reading its plan avoids a second AI pass and targets
+    # exactly the branches it flagged. Fall back to computing locally when there is
+    # no such comment (e.g. --commit with no PR) or when --reanalyze is given.
+    plan = None
+    if getattr(args, "pr", None) and not getattr(args, "reanalyze", False):
+        plan = _read_bot_plan(args.pr)
+
+    if plan:
+        fix_sha = plan.get("fix") or _resolve_fix_ref(args)[0]
+        subject = plan.get("subject", "")
+        branch_info = plan.get("branches", {})
+        buckets = {b: info.get("impact", AFFECTED) for b, info in branch_info.items()}
+        targets = bot.sort_branches(
+            b for b, info in branch_info.items() if info.get("outcome") == "conflict"
         )
-
-    files, introducers, buckets = bucket_branches(fix_sha, branches)
-    buckets, decided_by, _ = resolve_inconclusive(
-        args, fix_sha, files, introducers, buckets
-    )
-    print_summary(fix_sha, files, introducers, buckets, decided_by)
-
-    targets = bot.sort_branches(b for b, s in buckets.items() if s == AFFECTED)
-    if not targets:
-        print("\nNo AFFECTED branches; nothing to resolve.")
-        return 0
+        # Branches ci already opened clean PRs for -- carry them into the final
+        # summary so it stays complete (relinked to their existing PRs).
+        preopened = [
+            b
+            for b, info in branch_info.items()
+            if info.get("outcome") in ("opened", "done")
+        ]
+        if not ref_exists(fix_sha):
+            git("fetch", args.remote, fix_sha, check=False)
+        print(
+            f"Using the backport bot's summary from #{args.pr} "
+            f"(no re-analysis): {len(targets)} conflicting branch(es) to resolve."
+        )
+        if not targets:
+            print("Nothing left to resolve on that PR.")
+            return 0
+    else:
+        fix_sha, subject = _resolve_fix_ref(args)
+        branches = bot.sort_branches(bot.get_supported_branches())
+        if not branches:
+            raise BackportError(
+                "no supported release branches found (is this an AWS-LC clone with "
+                "the release branches fetched? `git fetch origin`)."
+            )
+        files, introducers, buckets = bucket_branches(fix_sha, branches)
+        buckets, decided_by, _ = resolve_inconclusive(
+            args, fix_sha, files, introducers, buckets
+        )
+        print_summary(fix_sha, files, introducers, buckets, decided_by)
+        targets = bot.sort_branches(b for b, s in buckets.items() if s == AFFECTED)
+        preopened = []
+        if not targets:
+            print("\nNo AFFECTED branches; nothing to resolve.")
+            return 0
 
     if not sys.stdin.isatty():
         print(
@@ -494,7 +560,7 @@ def cmd_resolve(args) -> int:
     )
 
     resolved: "dict[str, str]" = {}  # conflict branch -> local_branch (ready to PR)
-    clean_skipped: "list[str]" = []  # clean cherry-picks (ci/apply's job)
+    clean_skipped: "list[str]" = list(preopened)  # clean/already-opened (ci's job)
     blocked: "dict[str, str]" = {}  # branch -> worktree path / branch name
     errors: "dict[str, str]" = {}  # branch -> message
     for branch in targets:

@@ -175,6 +175,12 @@ def _add_resolve(sub) -> None:
     p.add_argument("--commit", help="fix commit SHA to backport")
     p.add_argument("--pr", help="source PR number to backport (resolved via gh)")
     p.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="recompute the affected/conflict set locally instead of reading the "
+        "backport bot's summary from the PR (re-runs the impact analysis)",
+    )
+    p.add_argument(
         "--in-place",
         dest="in_place",
         action="store_true",
