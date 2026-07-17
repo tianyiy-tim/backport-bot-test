@@ -135,22 +135,13 @@ def _edit_in_branch_shell(wt: str, branch: str) -> None:
     ]
     rerere_files = [c["path"] for c in conflicts if c["path"] not in marker_files]
 
-    print(
-        f"\n  >> Entering {branch} -- the fix is applied and conflicts are live here."
-    )
-    print(f"     Worktree: {wt}")
     if marker_files:
-        print("     Edit these (they contain <<<<<<< / >>>>>>> markers):")
-        for p in marker_files:
-            print(f"       - {p}")
+        print(f"   edit:   {', '.join(os.path.basename(p) for p in marker_files)}")
     if rerere_files:
-        print("     Auto-resolved via rerere -- please VERIFY:")
-        for p in rerere_files:
-            print(f"       - {p}")
-    print(
-        "     Then type `exit` (or Ctrl-D) to continue. No need to `git add` -- "
-        "resolved files are staged for you.\n"
-    )
+        names = ", ".join(os.path.basename(p) for p in rerere_files)
+        print(f"   verify: {names}  (auto-applied by rerere)")
+    print(f"   shell in {wt}")
+    print("   fix the files, then `exit` to continue")
     shell = os.environ.get("SHELL") or "/bin/bash"
     subprocess.call([shell], cwd=wt)
 
@@ -182,13 +173,9 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
         # name. `resolve` only owns the branches that actually conflict.
         git("cherry-pick", "--abort", check=False, cwd=wt)
         remove_worktree(wt)
-        print(
-            f"  OK {branch}: clean cherry-pick, no conflict -- skipping "
-            "(clean backports are opened by `ci`/`apply`)."
-        )
+        print("   clean — no conflict (ci/apply opens clean backports)")
         return "clean", None
 
-    print(f"\n  !! {branch}: {len(unmerged_files(wt))} conflicting file(s).")
     base_sha = git("rev-parse", ref).stdout.strip()
     while True:
         _edit_in_branch_shell(wt, branch)
@@ -196,18 +183,16 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
             # The user finished (or aborted) the cherry-pick themselves in the shell.
             head = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
             if head == base_sha:
-                print(
-                    f"  .. {branch}: cherry-pick was aborted in the shell; nothing "
-                    f"committed. Skipping. Worktree left in place: {wt}"
-                )
+                print(f"   skipped — cherry-pick aborted in shell (kept: {wt})")
                 return "blocked", wt
             break  # they committed the resolution themselves
         still = _stage_resolved(wt)
         if not still:
             break
-        print(f"  .. {branch}: still has conflict markers in: {', '.join(still)}")
-        if not _ask_yn(f"  Re-enter {branch} to keep resolving?"):
-            print(f"      Worktree left in place: {wt}")
+        left = ", ".join(os.path.basename(p) for p in still)
+        print(f"   still unresolved: {left}")
+        if not _ask_yn("   re-enter to keep editing?"):
+            print(f"   left for later: {wt}")
             return "blocked", wt
 
     if _cherry_pick_in_progress(wt):
@@ -224,16 +209,12 @@ def _resolve_branch(fix_sha: str, branch: str, run_id: str) -> "tuple[str, str]"
             cwd=wt,
         )
         if cont.returncode != 0:
-            print(
-                f"  !! {branch}: `cherry-pick --continue` failed: "
-                f"{(cont.stderr or cont.stdout).strip()}\n"
-                f"      Worktree left in place: {wt}"
-            )
+            print(f"   cherry-pick --continue failed (kept: {wt})")
             return "blocked", wt
     new_sha = git("rev-parse", "HEAD", cwd=wt).stdout.strip()
     git("branch", "-f", local_branch, new_sha)
     remove_worktree(wt)
-    print(f"  OK {branch}: conflicts resolved, backport commit ready.")
+    print("   resolved ✓")
     return "ready", local_branch
 
 
@@ -507,20 +488,17 @@ def _run_resolution(
                 "with --repo."
             )
 
-    mode = "in your current checkout" if in_place else "in isolated worktrees"
-    print(f"\nResolving conflicting backports ({mode}) among: {', '.join(targets)}")
-    print(
-        "(clean cherry-picks are skipped -- `ci`/`apply` open those; `resolve` only "
-        "handles branches that conflict. git rerere is on, so resolving a conflict "
-        "once auto-applies it to identical conflicts on sibling branches.)"
-    )
+    where = "your checkout" if in_place else "a worktree"
+    print(f"\nResolving {len(targets)} conflicting branch(es) in {where}:")
+    print(f"   {', '.join(targets)}")
+    print("   (rerere on — a fix is reused across identical conflicts)")
 
     resolved: "dict[str, str]" = {}  # conflict branch -> local_branch (ready to PR)
     clean_skipped: "list[str]" = list(preopened)  # clean/already-opened (ci's job)
     blocked: "dict[str, str]" = {}  # branch -> worktree path / branch name
     errors: "dict[str, str]" = {}  # branch -> message
     for branch in targets:
-        print(f"\n== {branch} " + "=" * max(0, 48 - len(branch)))
+        print(f"\n── {branch} " + "─" * max(0, 50 - len(branch)))
         if in_place:
             status, detail = _resolve_branch_in_place(
                 fix_sha, branch, fix_sha[:8], bot.REPO_PATH
@@ -540,36 +518,29 @@ def _run_resolution(
             blocked[branch] = detail
         else:
             errors[branch] = detail
-            print(f"  !! {branch}: {detail}")
+            print(f"   error: {detail}")
 
     # Restore the user's original branch unless we deliberately left them on one.
     if in_place and original_ref and not left_on_branch:
         git("checkout", "--quiet", original_ref, check=False)
 
-    print("\n" + "=" * 60)
+    print("\n── summary " + "─" * 42)
     if clean_skipped:
-        print(f"Clean (no conflict, handled by ci/apply): {', '.join(clean_skipped)}")
-    print(f"Resolved & ready to PR: {', '.join(resolved) or '-'}")
+        print(f"   clean (ci handles) : {', '.join(clean_skipped)}")
+    print(f"   resolved           : {', '.join(resolved) or '—'}")
     if left_on_branch:
-        print(
-            f"Stopped on {left_on_branch} (checked out in your repo, mid cherry-pick). "
-            f"Finish it, then re-run `resolve` for the rest."
-        )
+        print(f"   stopped on         : {left_on_branch} (finish it, then re-run)")
     if blocked:
-        print(f"Unfinished  : {', '.join(blocked)} (worktrees kept)")
+        print(f"   unfinished         : {', '.join(blocked)}")
     if errors:
-        print(f"Errors      : {', '.join(errors)}")
+        print(f"   errors             : {', '.join(errors)}")
 
     if not resolved:
-        print("\nNo conflicts were resolved; nothing to open PRs for.")
+        print("\nNothing to open PRs for.")
         return 0
 
-    if not _ask_yn(
-        f"\nCreate PRs for {len(resolved)} resolved branch(es) ({', '.join(resolved)})?"
-    ):
-        print(
-            "Skipped PR creation. Local branches kept: " + ", ".join(resolved.values())
-        )
+    if not _ask_yn(f"\nOpen {len(resolved)} PR(s) ({', '.join(resolved)})?"):
+        print("Skipped. Local branches kept: " + ", ".join(resolved.values()))
         return 0
 
     _assert_fork_remote(remote)  # only gate the push, so local resolution always works
@@ -578,10 +549,10 @@ def _run_resolution(
     for branch, local_branch in resolved.items():
         url = _open_pr(branch, local_branch, fix_sha, subject, source_pr, remote)
         if url.startswith("error:"):
-            print(f"  !! {branch}: {url}")
+            print(f"   {branch}: {url}")
         else:
             created[branch] = url
-            print(f"  OK {branch}: {url}")
+            print(f"   {branch}  {url}")
 
     # Post an updated ci-style summary on the source PR: the previously-conflicting
     # branches now show their opened backport PR instead of a conflict warning.
