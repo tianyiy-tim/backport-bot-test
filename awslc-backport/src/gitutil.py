@@ -107,25 +107,34 @@ def remove_worktree(path: str) -> None:
 # --------------------------------------------------------------------------
 
 
+# git status porcelain XY codes for unmerged paths -> git's long-format wording.
+_CONFLICT_KIND = {
+    "DD": "both deleted",
+    "AU": "added by us",
+    "UD": "deleted by them",
+    "UA": "added by them",
+    "DU": "deleted by us",
+    "AA": "both added",
+    "UU": "both modified",
+}
+
+
 def unmerged_files(wt: str) -> List[dict]:
     """List the still-unmerged files in *wt* (a conflicted cherry-pick), each as
-    ``{"path", "kind"}`` where *kind* is content conflict / modify/delete / add/add.
+    ``{"path", "kind"}`` where *kind* is git's own conflict wording (``both
+    modified`` / ``both added`` / ``deleted by us`` / ...), and *path* is the
+    repo-relative path.
 
     Uses ``git status --porcelain`` (the U/AA/DD codes). Call before staging, and
     re-call after each ``git add`` to see what remains -- this is how ``resolve``
-    walks the files one at a time.
+    tracks progress.
     """
     out = git("status", "--porcelain", cwd=wt).stdout
     files: List[dict] = []
     for line in out.splitlines():
         xy, path = line[:2], line[3:].strip()
         if "U" in xy or xy in ("AA", "DD"):
-            kind = (
-                "content conflict"
-                if xy == "UU"
-                else "modify/delete" if "D" in xy else "add/add" if xy == "AA" else xy
-            )
-            files.append({"path": path, "kind": kind})
+            files.append({"path": path, "kind": _CONFLICT_KIND.get(xy, "conflict")})
     return files
 
 
