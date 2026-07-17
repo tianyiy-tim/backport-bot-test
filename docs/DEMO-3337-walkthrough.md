@@ -8,7 +8,7 @@ Everything below is already staged; just follow the steps.
 
 - `fork/main` has been rolled back so the #3337 fix is **absent** again (only the
   backport tool + latest upstream are on it).
-- A fresh "fix" PR is open and labelled: **PR #67** — "Recognise known safe DH
+- A fresh "fix" PR is open and labelled: **PR #71** — "Recognise known safe DH
   groups/primes …" into `main`, carrying the **`needs-backport`** label.
 - The local checkout at `/Users/tianyiy/aws-lc` is on `main`, clean.
 - No other backport PRs/branches are open (previous demo cleaned up).
@@ -24,21 +24,21 @@ opens the remaining PRs and updates the summary.
 ---
 
 ## Step 1 — Look at the incoming fix
-Open **https://github.com/tianyiy-tim/aws-lc/pull/67** — the DH fix, labelled
+Open **https://github.com/tianyiy-tim/aws-lc/pull/71** — the DH fix, labelled
 `needs-backport`. It touches `crypto/fipsmodule/dh/*`, `crypto/dh_extra/*`, and
 `dh_test.cc`.
 
 ## Step 2 — Merge it (this triggers the bot)
 In the PR UI click **Merge** (keep the label on), or:
 ```sh
-gh pr merge 67 --repo tianyiy-tim/aws-lc --merge
+gh pr merge 71 --repo tianyiy-tim/aws-lc --merge
 ```
 
 ## Step 3 — Watch the bot run and read its summary
 ```sh
 gh run watch --repo tianyiy-tim/aws-lc
 ```
-Then refresh PR #67 — the bot posts a **summary table**. Expect roughly:
+Then refresh PR #71 — the bot posts a **summary table**. Expect roughly:
 - ✅ normal backport PRs opened for the newest branches
   (`fips-2026-06-26-snapshot`, `fips-2025-09-12-lts`) — clean cherry-picks.
 - ✅ a PR for a branch whose only clash was the **test file**
@@ -51,10 +51,10 @@ Then refresh PR #67 — the bot posts a **summary table**. Expect roughly:
 ```sh
 cd /Users/tianyiy/aws-lc && git fetch origin
 python3 /Users/tianyiy/Documents/projects/backport-bot-test/awslc-backport/src/main.py \
-    resolve --pr 67 --no-ai
+    resolve --pr 71 --no-ai
 ```
 What happens:
-- It **reads the bot's summary from PR #67** (no second analysis) and targets
+- It **reads the bot's summary from PR #71** (no second analysis) and targets
   exactly the conflicting branches.
 - By **default it works in your own checkout** (`--in-place`): it checks each
   conflicting branch out in `/Users/tianyiy/aws-lc`, so your open **IDE shows the
@@ -64,14 +64,14 @@ What happens:
   `fips-2021-10-20-1MU` the tool prints **"auto-applied by rerere, just verify"** —
   the files are already fixed, you just confirm.
 - When done it asks **"Open PRs? [Y/N]"** → `Y` opens one PR per resolved branch
-  and posts an **updated summary** on #67 with those rows now ✅.
+  and posts an **updated summary** on #71 with those rows now ✅.
 
 > Run it with the full `python3 …/src/main.py` path (as above), not `./backport`
 > from inside `awslc-backport`, so checking out a release branch doesn't briefly
 > hide the tool folder.
 
 ## Step 5 — Show the result
-Refresh PR #67: the follow-up summary shows every branch backported (✅), no
+Refresh PR #71: the follow-up summary shows every branch backported (✅), no
 conflict rows left. Open a couple of the backport PRs to show they're normal,
 reviewable PRs (nothing auto-merged).
 
