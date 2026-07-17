@@ -249,40 +249,43 @@ def _resolve_branch_in_place(
     if pick.returncode == 0:
         # Clean -> ci/apply own it; skip. The commit sits on detached HEAD and is
         # discarded when we check out the next branch / restore the original.
-        print(
-            f"  OK {branch}: clean cherry-pick, no conflict -- skipping "
-            "(clean backports are opened by `ci`/`apply`)."
-        )
+        print("   clean — no conflict (ci/apply opens clean backports)")
         return "clean", None
 
     base_sha = git("rev-parse", ref).stdout.strip()
-    print(f"\n  >> Your working tree is now ON {branch} (detached), fix applied.")
-    print(f"     Repo: {repo}")
-    for c in unmerged_files(repo):
-        print(f"       - {c['path']} ({c['kind']})")
-    print(
-        "     Resolve the conflicts in your IDE (this is your real checkout), "
-        "then answer below. No need to `git add` -- resolved files are staged."
-    )
     while True:
-        if not _ask_yn(f"  Done resolving {branch}?"):
+        conflicts = unmerged_files(repo)
+        marker = [
+            c["path"]
+            for c in conflicts
+            if file_has_conflict_markers(os.path.join(repo, c["path"]))
+        ]
+        rerere = [c["path"] for c in conflicts if c["path"] not in marker]
+        print(f"   checked out in your repo — edit in your IDE ({repo})")
+        if rerere:
+            names = ", ".join(os.path.basename(p) for p in rerere)
+            print(f"   auto-applied by rerere, just verify: {names}")
+        if marker:
+            print(f"   edit: {', '.join(os.path.basename(p) for p in marker)}")
+        else:
+            print("   nothing to edit — rerere resolved it; confirm to continue")
+
+        if not _ask_yn(f"   done resolving {branch}?"):
             print(
-                f"     Leaving you checked out on {branch} (mid cherry-pick) to "
-                "finish by hand:\n"
-                "       git add -A && git cherry-pick --continue   # when done\n"
-                "       git cherry-pick --abort                    # to bail"
+                f"   left checked out on {branch} to finish by hand "
+                "(`git add -A && git cherry-pick --continue`, or `--abort`)"
             )
             return "blocked", branch
         if not _cherry_pick_in_progress(repo):
             head = git("rev-parse", "HEAD").stdout.strip()
             if head == base_sha:
-                print(f"  .. {branch}: cherry-pick aborted; skipping.")
+                print("   skipped — cherry-pick aborted")
                 return "blocked", branch
             break  # user ran --continue themselves
         still = _stage_resolved(repo)
         if not still:
             break
-        print(f"  .. {branch}: still has conflict markers in: {', '.join(still)}")
+        print(f"   still unresolved: {', '.join(os.path.basename(p) for p in still)}")
 
     if _cherry_pick_in_progress(repo):
         cont = git(
@@ -297,14 +300,11 @@ def _resolve_branch_in_place(
             check=False,
         )
         if cont.returncode != 0:
-            print(
-                f"  !! {branch}: `cherry-pick --continue` failed: "
-                f"{(cont.stderr or cont.stdout).strip()}"
-            )
+            print("   cherry-pick --continue failed")
             return "blocked", branch
     new_sha = git("rev-parse", "HEAD").stdout.strip()
     git("branch", "-f", local_branch, new_sha)
-    print(f"  OK {branch}: conflicts resolved, backport commit ready ({local_branch}).")
+    print("   resolved ✓")
     return "ready", local_branch
 
 

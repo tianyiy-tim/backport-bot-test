@@ -144,13 +144,15 @@ pass, and it targets precisely what `ci` reported). Pass `--reanalyze` to ignore
 the comment and recompute locally instead (deterministic, or AI unless `--no-ai`);
 this is also the automatic fallback when there is no bot summary (e.g. `--commit`).
 
-By default the conflict is edited in a throwaway worktree (a full checkout you can
-open in your editor). If you'd rather resolve it in your **own** repo so your
-already-open IDE window updates in real time, pass `--in-place`: it checks each
-conflicting branch out (detached) in your working repo, waits while you fix it,
-then restores your original branch when done. It needs a clean working tree, and
-is best run from a **separate** clone via `--repo` (checking out a release branch
-in the repo the tool lives in temporarily hides `awslc-backport/`).
+By default `resolve` edits **in your own checkout** (`--in-place`): it checks each
+conflicting branch out (detached) in your working repo, so your already-open IDE
+window shows the conflict live; you fix it, answer the prompt, and it restores
+your original branch when done. It needs a clean working tree. When a conflict was
+already solved before, `rerere` re-applies it and `resolve` says so ("auto-applied
+by rerere, just verify"). Prefer isolation? `--worktree` does it in a throwaway
+worktree instead (nothing touches your checkout). Tip: run from a checkout where
+the tool lives *outside* the repo (or use `--worktree`) to avoid briefly hiding
+`awslc-backport/` while a release branch is checked out.
 
 ```bash
 ./backport resolve --pr 42 --in-place --repo <aws-lc>

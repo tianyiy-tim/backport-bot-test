@@ -39,8 +39,8 @@ Subcommands:
   clear               Remove the saved run state.
 
 The target AWS-LC checkout is selected with `--repo <path>`, the
-`BACKPORT_REPO_PATH` environment variable, or (default) the checkout this tool
-lives in. It must have the release branches fetched (origin/fips-*, origin/main).
+`BACKPORT_REPO_PATH` environment variable, or (default) the current directory. It
+must have the release branches fetched (origin/fips-*, origin/main).
 
 Module map: main (this file) dispatches; gitutil = git plumbing + repo targeting;
 patches = patch->commit + source resolution; runstate = analyze->apply cache;
@@ -70,7 +70,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--repo",
         help="path to the AWS-LC checkout to operate on (default: "
-        "$BACKPORT_REPO_PATH, else the checkout this tool lives in)",
+        "$BACKPORT_REPO_PATH, else the current directory)",
     )
     p.add_argument(
         "--base", help="base ref to apply the patch on (default origin/main)"
@@ -187,8 +187,14 @@ def _add_resolve(sub) -> None:
         "--in-place",
         dest="in_place",
         action="store_true",
-        help="check each conflicting branch out in your current repo (so your open "
-        "IDE reflects it) instead of an isolated worktree; needs a clean tree",
+        help="(default) check each conflicting branch out in your current repo so "
+        "your open IDE reflects it; needs a clean tree",
+    )
+    p.add_argument(
+        "--worktree",
+        dest="in_place",
+        action="store_false",
+        help="resolve in an isolated throwaway worktree instead of your checkout",
     )
     p.add_argument(
         "--remote",
@@ -201,7 +207,7 @@ def _add_resolve(sub) -> None:
         help="deterministic only; do not consult the AI (default: AI on)",
     )
     _add_common(p)
-    p.set_defaults(func=cmd_resolve, json=False)
+    p.set_defaults(func=cmd_resolve, json=False, in_place=True)
 
 
 def _add_clear(sub) -> None:

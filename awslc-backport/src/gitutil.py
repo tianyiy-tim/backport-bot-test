@@ -323,16 +323,12 @@ def branch_basenames(ref: str) -> Set[str]:
 
 def resolve_repo_path(repo_arg: Optional[str]) -> str:
     """Resolve the target repo: ``--repo``, then ``$BACKPORT_REPO_PATH``, then the
-    checkout this tool lives in.
+    current working directory (wherever you invoked the tool from).
 
-    Because ``awslc-backport/`` sits inside the AWS-LC repo, the last default
-    means ``--repo`` is optional when you run the tool from the repo.
+    Defaulting to the cwd means the tool operates on "the repo I'm standing in" —
+    run it from anywhere inside your AWS-LC checkout and it just works.
     """
-    return (
-        repo_arg
-        or os.environ.get("BACKPORT_REPO_PATH")
-        or os.path.dirname(os.path.abspath(__file__))
-    )
+    return repo_arg or os.environ.get("BACKPORT_REPO_PATH") or os.getcwd()
 
 
 def target_repo(args) -> str:

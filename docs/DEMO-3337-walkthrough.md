@@ -50,20 +50,25 @@ Then refresh PR #59 — the bot posts a **summary table**. Expect roughly:
 ## Step 4 — Resolve the conflicts locally (the interactive part)
 ```sh
 cd /Users/tianyiy/aws-lc && git fetch origin
-cd awslc-backport
-./backport resolve --pr 59 --no-ai
+python3 /Users/tianyiy/Documents/projects/backport-bot-test/awslc-backport/src/main.py \
+    resolve --pr 59 --no-ai
 ```
 What happens:
 - It **reads the bot's summary from PR #59** (no second analysis) and targets
   exactly the conflicting branches.
-- For each one it drops you into a shell **inside that branch's checkout** with the
-  fix applied and the conflict live. Edit the files, then type `exit`.
-  (Prefer your own editor/IDE window? add `--in-place` to swap the branch into your
-  working checkout instead — needs a clean tree.)
-- `git rerere` is on, so once you resolve `fips-2021-10-20`, its twin
-  `fips-2021-10-20-1MU` auto-applies — you just verify and `exit`.
-- When done it asks **"Create PRs? [Y/N]"** → `Y` opens one PR per resolved branch
+- By **default it works in your own checkout** (`--in-place`): it checks each
+  conflicting branch out in `/Users/tianyiy/aws-lc`, so your open **IDE shows the
+  conflict live**. Fix the files, come back to the terminal, answer
+  `done resolving <branch>? Y`. (Prefer isolation? add `--worktree`.)
+- `git rerere` is on. Resolve `fips-2021-10-20` first; on its twin
+  `fips-2021-10-20-1MU` the tool prints **"auto-applied by rerere, just verify"** —
+  the files are already fixed, you just confirm.
+- When done it asks **"Open PRs? [Y/N]"** → `Y` opens one PR per resolved branch
   and posts an **updated summary** on #59 with those rows now ✅.
+
+> Run it with the full `python3 …/src/main.py` path (as above), not `./backport`
+> from inside `awslc-backport`, so checking out a release branch doesn't briefly
+> hide the tool folder.
 
 ## Step 5 — Show the result
 Refresh PR #59: the follow-up summary shows every branch backported (✅), no
