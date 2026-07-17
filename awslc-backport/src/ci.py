@@ -178,8 +178,9 @@ def _summary_table(
         target = f"--pr {source_pr}" if source_pr else f"--commit {fix_sha[:12]}"
         lines += [
             "",
-            "> ℹ️ Conflicting branches were **not** modified. Resolve them "
-            "interactively (walks each file, opens one PR per branch) with:\n"
+            "> ℹ️ Conflicting branches were **not** modified. Resolve them locally — "
+            "each conflict opens in your checkout to edit, then a PR is opened per "
+            "branch:\n"
             f"> `backport resolve {target}`",
         ]
     return "\n".join(lines)
