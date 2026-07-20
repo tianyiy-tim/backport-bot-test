@@ -19,7 +19,7 @@ from patches import (
     is_empty_patch,
     resolve_patch_and_base,
 )
-from resolve import _run_resolution
+from resolve import _conflict_lines, _run_resolution
 from runstate import delete_patch_artifacts, run_dir
 from verdicts import bucket_branches
 
@@ -37,20 +37,23 @@ def _run_cherry_picks(
     errors: List[str] = []
     for branch in targets:
         status, detail, extra = cherry_pick_local(fix_sha, branch, run_id)
+        print(f"\n── {branch} " + "─" * max(0, 50 - len(branch)))
         if status == "clean":
-            note = (
-                f"  (dropped test-only hunk: {', '.join(c['path'] for c in extra)})"
-                if extra
-                else ""
-            )
-            print(f"  [OK] {branch}  ->  {detail}{note}")
+            if extra:
+                print("  Clean — test-only conflict auto-resolved (test hunk dropped):")
+                for line in _conflict_lines(extra):
+                    print(line)
+            else:
+                print("  Clean cherry-pick.")
+            print(f"  branch: {detail}")
             clean.append(branch)
         elif status == "conflict":
-            files = ", ".join(f"{c['path']} ({c['kind']})" for c in extra)
-            print(f"  [!!] {branch}  ->  merge conflict in {files}")
+            print("  CONFLICT — this backport must be resolved:")
+            for line in _conflict_lines(extra):
+                print(line)
             conflict.append(branch)
         else:
-            print(f"  [??] {branch}  ->  error: {detail}")
+            print(f"  error: {detail}")
             errors.append(branch)
     return clean, conflict, errors
 
@@ -125,11 +128,19 @@ def cmd_apply(args) -> int:
         print()
         clean, conflict, errors = _run_cherry_picks(fix_sha, targets)
 
-    print()
-    print(f"Clean: {', '.join(clean) or '-'}")
-    print(f"Conflicts (resolve by hand): {', '.join(conflict) or '-'}")
+    print("\n" + "─" * 52)
+    print("Summary\n")
+
+    def _list(title, items):
+        print(f"  {title}:")
+        for it in items:
+            print(f"    - {it}")
+        print()
+
+    _list("Clean (backport branches created)", clean or ["(none)"])
+    _list("Conflicts (need resolution)", conflict or ["(none)"])
     if errors:
-        print(f"Errors: {', '.join(errors)}")
+        _list("Errors", errors)
 
     _cleanup_after_apply(args, run, conflict, errors)
 
@@ -151,7 +162,10 @@ def cmd_apply(args) -> int:
                 clean,  # already-applied clean backports (for the summary)
                 source_pr=None,
             )
-        print("  Resolve them later with:  backport resolve --commit " + fix_sha[:12])
+        print(
+            "  Resolve them later with:  backport resolve --commit "
+            + (getattr(args, "commit", None) or fix_sha[:12])
+        )
     print(
         "\nNothing was pushed or merged. Inspect `git branch --list 'backport/*'`, "
         "then push and open PRs for human review when ready."
