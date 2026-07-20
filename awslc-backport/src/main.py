@@ -136,12 +136,25 @@ def _add_apply(sub) -> None:
     )
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument(
+        "--in-place",
+        dest="in_place",
+        action="store_true",
+        help="(default) when conflicts are resolved, check each branch out in your "
+        "current repo so your IDE shows it; --worktree uses an isolated worktree",
+    )
+    p.add_argument(
+        "--worktree",
+        dest="in_place",
+        action="store_false",
+        help="resolve conflicts in an isolated throwaway worktree, not your checkout",
+    )
+    p.add_argument(
         "--keep-patch",
         action="store_true",
         help="do not delete the patch file / cached run after a clean apply",
     )
     _add_common(p)
-    p.set_defaults(func=cmd_apply)
+    p.set_defaults(func=cmd_apply, in_place=True)
 
 
 def _add_ci(sub) -> None:
