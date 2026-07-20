@@ -475,16 +475,27 @@ def _read_bot_plan(pr) -> "dict | None":
 
 
 def _run_resolution(
-    args, fix_sha, subject, buckets, targets, preopened, source_pr
+    args,
+    fix_sha,
+    subject,
+    buckets,
+    targets,
+    source_pr,
+    preopened=(),
+    clean_local=(),
 ) -> int:
-    """Interactively resolve *targets* for *fix_sha*, then optionally open PRs.
+    """Resolve *targets* for *fix_sha*, then open one PR per ready branch.
 
-    Shared engine behind both entry points: `cmd_resolve` (which derives the
-    targets from the PR plan or a local analysis) and `apply` (which hands off the
-    branches that just conflicted during a local cherry-pick session, so nothing
-    is re-analyzed). *preopened* are branches already backported elsewhere (ci's
-    clean PRs), carried into the final summary; *source_pr*, when set, gets the
-    updated summary comment.
+    Shared engine behind both entry points:
+      - `cmd_resolve`: *targets* are the conflicting branches (from the PR plan or
+        a local analysis); *preopened* are branches CI already opened clean PRs for
+        (summary only, not re-opened).
+      - `apply`: *targets* are the branches that just conflicted, and *clean_local*
+        are the branches apply cherry-picked cleanly (their `backport/<b>/<id>`
+        branch exists) -- these get PRs too, so the whole backport lands in PRs.
+
+    Branches to PR = freshly resolved conflicts + *clean_local*. *source_pr*, when
+    set, gets the updated summary comment.
     """
     if not sys.stdin.isatty():
         print(
@@ -494,65 +505,70 @@ def _run_resolution(
         return 3
 
     remote = getattr(args, "remote", "origin")
+    run_id = fix_sha[:8]
     enable_rerere()
     in_place = getattr(args, "in_place", False)
     original_ref = None
-    left_on_branch = None  # set if an --in-place branch is left checked out
-    if in_place:
-        dirty = git("status", "--porcelain").stdout.strip()
-        if dirty:
-            raise BackportError(
-                "--in-place needs a clean working tree (it checks each branch out "
-                "in your current repo). Commit or stash your changes first."
-            )
-        original_ref = _current_ref()
-        if os.path.abspath(__file__).startswith(
-            os.path.abspath(bot.REPO_PATH) + os.sep
-        ):
-            print(
-                "note: the tool lives inside the target repo, so --in-place will "
-                "briefly remove `awslc-backport/` while a release branch is checked "
-                "out (restored at the end). To avoid that, run from a separate clone "
-                "with --repo."
-            )
+    left_on_branch = None
+    resolved: "dict[str, str]" = {}
+    clean_skipped: "list[str]" = list(preopened)
+    blocked: "dict[str, str]" = {}
+    errors: "dict[str, str]" = {}
 
-    where = "your working checkout" if in_place else "an isolated worktree"
-    print(f"\n{len(targets)} branch(es) have conflicts to resolve (in {where}):")
-    for b in targets:
-        print(f"  - {b}")
-    print("\nrerere is on: a resolution is reused across identical conflicts on")
-    print("sibling branches (you'll be asked to verify those).")
-
-    resolved: "dict[str, str]" = {}  # conflict branch -> local_branch (ready to PR)
-    clean_skipped: "list[str]" = list(preopened)  # clean/already-opened (ci's job)
-    blocked: "dict[str, str]" = {}  # branch -> worktree path / branch name
-    errors: "dict[str, str]" = {}  # branch -> message
-    for branch in targets:
-        print(f"\n── {branch} " + "─" * max(0, 50 - len(branch)))
+    if targets:
         if in_place:
-            status, detail = _resolve_branch_in_place(
-                fix_sha, branch, fix_sha[:8], bot.REPO_PATH
-            )
-        else:
-            status, detail = _resolve_branch(fix_sha, branch, fix_sha[:8])
-        if status == "clean":
-            clean_skipped.append(branch)
-        elif status == "ready":
-            resolved[branch] = detail
-        elif status == "blocked":
-            if in_place:
-                # The repo is left checked out on this branch mid-cherry-pick; stop
-                # here rather than yanking it out from under the user.
-                left_on_branch = branch
-                break
-            blocked[branch] = detail
-        else:
-            errors[branch] = detail
-            print(f"   error: {detail}")
+            if git("status", "--porcelain").stdout.strip():
+                raise BackportError(
+                    "--in-place needs a clean working tree (it checks each branch "
+                    "out in your current repo). Commit or stash your changes first."
+                )
+            original_ref = _current_ref()
+            if os.path.abspath(__file__).startswith(
+                os.path.abspath(bot.REPO_PATH) + os.sep
+            ):
+                print(
+                    "note: the tool lives inside the target repo, so --in-place will "
+                    "briefly remove `awslc-backport/` while a release branch is "
+                    "checked out (restored at the end). To avoid that, run from a "
+                    "separate clone with --repo."
+                )
 
-    # Restore the user's original branch unless we deliberately left them on one.
-    if in_place and original_ref and not left_on_branch:
-        git("checkout", "--quiet", original_ref, check=False)
+        where = "your working checkout" if in_place else "an isolated worktree"
+        print(f"\n{len(targets)} branch(es) have conflicts to resolve (in {where}):")
+        for b in targets:
+            print(f"  - {b}")
+        print("\nrerere is on: a resolution is reused across identical conflicts on")
+        print("sibling branches (you'll be asked to verify those).")
+
+        for branch in targets:
+            print(f"\n── {branch} " + "─" * max(0, 50 - len(branch)))
+            if in_place:
+                status, detail = _resolve_branch_in_place(
+                    fix_sha, branch, run_id, bot.REPO_PATH
+                )
+            else:
+                status, detail = _resolve_branch(fix_sha, branch, run_id)
+            if status == "clean":
+                clean_skipped.append(branch)
+            elif status == "ready":
+                resolved[branch] = detail
+            elif status == "blocked":
+                if in_place:
+                    left_on_branch = branch
+                    break
+                blocked[branch] = detail
+            else:
+                errors[branch] = detail
+                print(f"   error: {detail}")
+
+        if in_place and original_ref and not left_on_branch:
+            git("checkout", "--quiet", original_ref, check=False)
+
+    # Everything that should get a PR: freshly resolved conflicts + the branches
+    # apply already cherry-picked cleanly (their backport/<b>/<run_id> exists).
+    to_pr: "dict[str, str]" = dict(resolved)
+    for b in clean_local:
+        to_pr.setdefault(b, f"backport/{b}/{run_id}")
 
     print("\n" + "─" * 52)
     print("Summary\n")
@@ -563,12 +579,9 @@ def _run_resolution(
             print(f"    - {it}")
         print()
 
-    if resolved:
-        _list("Resolved, ready to open PRs", resolved)
-    else:
-        print("  Resolved, ready to open PRs:\n    (none)\n")
+    _list("Ready to open PRs", to_pr or ["(none)"])
     if clean_skipped:
-        _list("Clean — already opened by CI", clean_skipped)
+        _list("Already opened by CI", clean_skipped)
     if left_on_branch:
         _list("Left checked out to finish (re-run when done)", [left_on_branch])
     if blocked:
@@ -576,26 +589,24 @@ def _run_resolution(
     if errors:
         _list("Errors", [f"{b}: {m}" for b, m in errors.items()])
 
-    if not resolved:
+    if not to_pr:
         print("Nothing to open PRs for.")
         return 0
 
-    if not _ask_yn(f"Open {len(resolved)} pull request(s)?"):
+    if not _ask_yn(f"Open {len(to_pr)} pull request(s)?"):
         print("Skipped. Local branches kept:")
-        for b, lb in resolved.items():
+        for b, lb in to_pr.items():
             print(f"  - {lb}")
         return 0
 
     _assert_fork_remote(remote)  # only gate the push, so local resolution always works
     print()
     created: "dict[str, str]" = {}
-    for branch, local_branch in resolved.items():
+    for branch, local_branch in to_pr.items():
         url = _open_pr(branch, local_branch, fix_sha, subject, source_pr, remote)
-        if url.startswith("error:"):
-            print(f"  {branch}\n    {url}")
-        else:
+        print(f"  {branch}\n    {url}")
+        if not url.startswith("error:"):
             created[branch] = url
-            print(f"  {branch}\n    {url}")
 
     # Post an updated ci-style summary on the source PR: the previously-conflicting
     # branches now show their opened backport PR instead of a conflict warning.
@@ -610,7 +621,7 @@ def _run_resolution(
             clean_skipped,
             still_conflicting,
             errors,
-            fix_sha[:8],
+            run_id,
         )
         print(f"\nUpdated the summary on #{source_pr}.")
     return 0
@@ -675,6 +686,6 @@ def cmd_resolve(args) -> int:
         subject,
         buckets,
         targets,
-        preopened,
         source_pr=getattr(args, "pr", None),
+        preopened=preopened,
     )

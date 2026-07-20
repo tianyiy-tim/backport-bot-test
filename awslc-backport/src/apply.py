@@ -14,7 +14,6 @@ import engine as bot
 from common import AFFECTED
 from gitutil import cherry_pick_local, git
 from patches import (
-    _ask_yn,
     commit_from_patch,
     is_empty_patch,
     resolve_patch_and_base,
@@ -87,11 +86,15 @@ def _select_targets(args, buckets):
 
 
 def cmd_apply(args) -> int:
-    """Cherry-pick the patch onto local branches (never pushes / opens a PR).
+    """Cherry-pick the patch onto local branches, then (interactively) open a PR
+    per branch -- resolving any conflicts along the way.
 
     Targets come from --branches, or --all-affected (the AFFECTED branches from
-    the last analyze). Each clean pick lands as a local ``backport/<branch>/<id>``
-    branch; conflicts are reported, never auto-resolved.
+    the last analyze). Clean picks land as local ``backport/<branch>/<id>``
+    branches; conflicts are resolved via the interactive hand-off. In an
+    interactive terminal it finishes by offering to open one PR per prepared
+    branch (clean + resolved); non-interactively it just reports and leaves the
+    local branches for review.
     """
     patch, base, run = resolve_patch_and_base(args)
     if is_empty_patch(patch):
@@ -114,7 +117,7 @@ def cmd_apply(args) -> int:
             return 0
 
         # Show the plan and confirm before touching anything.
-        print("Will cherry-pick the patch onto local branches (no push, no PR):")
+        print("Will cherry-pick the patch onto local branches:")
         for b in targets:
             print(f"  - {b}  ->  backport/{b}/{fix_sha[:8]}")
         if not args.yes:
@@ -127,7 +130,24 @@ def cmd_apply(args) -> int:
 
         print()
         clean, conflict, errors = _run_cherry_picks(fix_sha, targets)
+        subject = git("log", "-1", "--format=%s", fix_sha).stdout.strip()
 
+    _cleanup_after_apply(args, run, conflict, errors)
+
+    # Interactive: resolve any conflicts, then open one PR per prepared branch
+    # (clean cherry-picks + resolved conflicts) -- the full local pipeline.
+    if sys.stdin.isatty() and (clean or conflict):
+        return _run_resolution(
+            args,
+            fix_sha,
+            subject,
+            buckets,
+            bot.sort_branches(conflict),
+            source_pr=None,
+            clean_local=clean,
+        )
+
+    # Non-interactive: report and leave the local branches for review.
     print("\n" + "─" * 52)
     print("Summary\n")
 
@@ -137,38 +157,18 @@ def cmd_apply(args) -> int:
             print(f"    - {it}")
         print()
 
-    _list("Clean (backport branches created)", clean or ["(none)"])
+    _list("Clean (local backport branches)", clean or ["(none)"])
     _list("Conflicts (need resolution)", conflict or ["(none)"])
     if errors:
         _list("Errors", errors)
-
-    _cleanup_after_apply(args, run, conflict, errors)
-
     if conflict:
         print(
-            "\nConflicting branches were NOT modified (the cherry-pick was aborted; "
-            "no conflict markers were committed)."
-        )
-        if sys.stdin.isatty() and _ask_yn(
-            f"Resolve the {len(conflict)} conflicting branch(es) interactively now?"
-        ):
-            subject = git("log", "-1", "--format=%s", fix_sha).stdout.strip()
-            return _run_resolution(
-                args,
-                fix_sha,
-                subject,
-                buckets,
-                bot.sort_branches(conflict),
-                clean,  # already-applied clean backports (for the summary)
-                source_pr=None,
-            )
-        print(
-            "  Resolve them later with:  backport resolve --commit "
+            "Resolve them with:  backport resolve --commit "
             + (getattr(args, "commit", None) or fix_sha[:12])
         )
     print(
-        "\nNothing was pushed or merged. Inspect `git branch --list 'backport/*'`, "
-        "then push and open PRs for human review when ready."
+        "\nNothing was pushed (non-interactive). Inspect `git branch --list "
+        "'backport/*'`."
     )
     return 0
 
