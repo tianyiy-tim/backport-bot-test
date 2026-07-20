@@ -51,7 +51,7 @@ and `testing/` sit at the tool root.
   the git/text helpers.
 - `ai.py` — `ai_impact_analysis` (advisory only; never acts alone). Bedrock via
   the `anthropic` SDK; degrades to `None` with no SDK/credentials.
-- `settings.py` — loads `claude-settings.json` (tool root): the single home for the
+- `settings.py` — loads `model-config.json` (tool root): the single home for the
   model pin + Bedrock knobs (`MODEL_ID`, `AWS_REGION`, `MAX_TOKENS`,
   `MAX_DIFF_BYTES`, `MAX_FILE_BYTES`; env vars override the file). `engine.py`
   re-exports `MODEL_ID`/byte caps as its `_BEDROCK_MODEL_ID`/`_AI_MAX_*` names

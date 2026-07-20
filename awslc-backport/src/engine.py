@@ -92,7 +92,7 @@ def _patch_id_pathspec():
     return ["--", "."] + [f":(exclude){p}" for p in _GENERATED_PATHSPECS]
 
 
-# Bedrock model pin + AI knobs live in claude-settings.json (see settings.py).
+# Bedrock model pin + AI knobs live in model-config.json (see settings.py).
 _BEDROCK_MODEL_ID = settings.MODEL_ID
 
 # Prefixes matched against `origin/<branch>` when there is no manifest. Covers

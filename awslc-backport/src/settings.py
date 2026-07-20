@@ -1,21 +1,21 @@
 """
 Central AI / model configuration.
 
-All model pins and Bedrock call knobs live in one place -- ``claude-settings.json``
+All model pins and Bedrock call knobs live in one place -- ``model-config.json``
 at the tool root -- instead of being scattered across the engine and AI modules.
-Precedence for each value: environment variable > ``claude-settings.json`` >
+Precedence for each value: environment variable > ``model-config.json`` >
 built-in default (so CI can still override via env, and the tool still runs if the
 file is missing).
 
 Consumed by ``engine.py`` (byte caps + the model id it re-exports) and ``ai.py``
-(model id, region, max tokens). To change the model, edit ``claude-settings.json``.
+(model id, region, max tokens). To change the model, edit ``model-config.json``.
 """
 
 import json
 import os
 from pathlib import Path
 
-# Built-in fallbacks (used only if claude-settings.json is missing/unreadable).
+# Built-in fallbacks (used only if model-config.json is missing/unreadable).
 _DEFAULTS = {
     "model_id": "us.anthropic.claude-opus-4-8",
     "aws_region": "us-east-1",
@@ -24,8 +24,8 @@ _DEFAULTS = {
     "max_file_bytes": 45000,
 }
 
-# claude-settings.json sits at the tool root (one level up from src/).
-_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "claude-settings.json"
+# model-config.json sits at the tool root (one level up from src/).
+_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "model-config.json"
 
 
 def _load() -> dict:
