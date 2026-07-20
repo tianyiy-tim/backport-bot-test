@@ -19,6 +19,7 @@ try:
 except ImportError:
     _anthropic_module = None
 
+import settings
 from engine import (
     _AI_MAX_FILE_BYTES,
     _BEDROCK_MODEL_ID,
@@ -43,7 +44,7 @@ def _ai_client():
         return None
     if os.environ.get("BACKPORT_DISABLE_AI") == "1":
         return None
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    region = settings.AWS_REGION
     # Resolve creds via the standard AWS chain (env, ~/.aws, SSO, IAM role), not
     # just AWS_ACCESS_KEY_ID which misses creds in ~/.aws/credentials.
     try:
@@ -366,7 +367,7 @@ def _call_model(client, user):
     try:
         with client.messages.stream(
             model=_BEDROCK_MODEL_ID,
-            max_tokens=1024,
+            max_tokens=settings.MAX_TOKENS,
             thinking={"type": "adaptive"},
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user}],

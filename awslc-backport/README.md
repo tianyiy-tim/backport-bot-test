@@ -13,11 +13,13 @@ into a PR** — `apply` only creates local `backport/<branch>/<id>` branches.
 awslc-backport/
   backport          Wrapper script (bridges AWS_REGION, runs src/main.py).
   backport-bot.yml  Reference GitHub Actions workflow (copy into .github/workflows/).
+  claude-settings.json  AI model config (model id, region, max tokens, byte caps).
   requirements.txt  Runtime deps for the AI layer (anthropic, boto3).
   README.md         This file.
   CLAUDE.md         Architecture / maintainer notes.
   src/
     main.py         Entrypoint: argument parser + subcommand dispatch.
+    settings.py     Loads claude-settings.json (single home for the model pin).
     gitutil.py      Git plumbing, throwaway worktrees, cherry-pick, repo targeting.
     patches.py      Patch -> temp commit, patch-source resolution, test-file prompt.
     runstate.py     The analyze -> apply run-state cache.
@@ -180,6 +182,11 @@ The advisory layer uses Amazon Bedrock via the `anthropic` SDK and the boto3
 default credential chain. If the SDK/credentials are unavailable, the AI path
 skips and the deterministic engine runs alone. `BACKPORT_DISABLE_AI=1` forces it off.
 
+The model pin and Bedrock call knobs (model id, region, max tokens, context byte
+caps) live in one place, **`claude-settings.json`** at the tool root, loaded by
+`src/settings.py`. To change the model, edit that file; environment variables
+(`BEDROCK_MODEL_ID`, `AWS_REGION`, `BEDROCK_MAX_TOKENS`) override it for a run.
+
 ## Testing
 
 ```bash
@@ -202,7 +209,7 @@ python3 testing/replay_real_cve.py 3107 --no-ai      # a single fix
 | `BACKPORT_BRANCH_PREFIXES` | Supported-branch prefixes when no manifest is present. |
 | `BACKPORT_MAINLINE_REF` | Mainline ref (default `origin/main`). |
 | `BACKPORT_GENERATED_PATHS` | Generated-file prefixes excluded from patch-id matching (default `generated-src`). |
-| `BEDROCK_MODEL_ID` | Bedrock model / inference profile. |
+| `BEDROCK_MODEL_ID` | Override the model pinned in `claude-settings.json`. |
 | `BACKPORT_DISABLE_AI` | `1` forces the deterministic-only path. |
 
 See `CLAUDE.md` for the architecture and the rationale behind each analysis path.

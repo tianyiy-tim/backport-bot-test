@@ -27,6 +27,8 @@ import subprocess
 import sys
 from datetime import date, datetime
 
+import settings
+
 # ---------------------------------------------------------------------------
 # 1. Repository targeting
 # ---------------------------------------------------------------------------
@@ -59,8 +61,10 @@ def _git(args, **kwargs):
 # 2. Caches, constants & configuration
 # ---------------------------------------------------------------------------
 
-_AI_MAX_DIFF_BYTES = 40_000  # cap diff bytes fed to the model
-_AI_MAX_FILE_BYTES = 45_000  # cap per-file context bytes fed to the model
+_AI_MAX_DIFF_BYTES = settings.MAX_DIFF_BYTES  # cap diff bytes fed to the model
+_AI_MAX_FILE_BYTES = (
+    settings.MAX_FILE_BYTES
+)  # cap per-file context bytes fed to the model
 
 # Per-process caches for the pre-image work, which repeats identical git calls
 # within one analysis. Keys are prefixed with the unique fix SHA, so entries
@@ -88,8 +92,8 @@ def _patch_id_pathspec():
     return ["--", "."] + [f":(exclude){p}" for p in _GENERATED_PATHSPECS]
 
 
-# Bedrock cross-region inference profile; verify the ID in the AWS console.
-_BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-8")
+# Bedrock model pin + AI knobs live in claude-settings.json (see settings.py).
+_BEDROCK_MODEL_ID = settings.MODEL_ID
 
 # Prefixes matched against `origin/<branch>` when there is no manifest. Covers
 # real release branches (fips-YYYY-MM-DD, fips-NetOS-*) and the POC fixture.
